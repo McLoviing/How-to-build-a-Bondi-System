@@ -38,3 +38,18 @@ for parada in resultado:
     print("Referencia:", parada["Referencia"])
     print("Latitud:", parada["Lat"])
     print("Longitud:", parada["Lon"])
+
+
+"""""
+Busca de conexion
+"""
+resultado = list(prolog.query("conexion_directa(p_9, p_10, Linea, Distancia, Tiempo)"))
+
+if resultado:
+    for conexion in resultado:
+        print("Conexión encontrada:")
+        print("Linea:", conexion["Linea"])
+        print("Distancia:", conexion["Distancia"], "metros")
+        print("Tiempo:", conexion["Tiempo"], "minutos")
+else:
+    print("No se encontró conexión entre")
