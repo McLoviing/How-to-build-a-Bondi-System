@@ -16,7 +16,7 @@ prolog.consult(str(archivo))
 comprueba si las lineas elegidas estan en la base de conocimiento
 """""
 
-lineas_elegidas = ["20", "21", "50", "51", "60", "61"]
+lineas_elegidas = ["20", "21", "50", "51", "60", "61", "100"]
 
 for linea in lineas_elegidas:
     resultado = list(prolog.query(f"linea('{linea}')"))
