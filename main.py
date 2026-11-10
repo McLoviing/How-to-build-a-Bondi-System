@@ -1,5 +1,6 @@
 
 
+from itertools import count
 from pathlib import Path
 import unicodedata
 from pyswip import Prolog
@@ -56,6 +57,36 @@ def obtener_lineas(prolog):
             lineas.append(linea)
 
     return sorted(lineas)
+
+def obtener_paradas(prolog):
+    """
+    ***
+    * Lee las paradas desde los hechos parada/5.
+    *
+    * PRE: la base debe contener hechos parada/5.
+    * POST: devuelve las paradas con nombre y coordenadas.
+    * @return: lista de diccionarios con los datos de cada parada.
+    """
+    paradas = {}
+
+    consulta = "parada(Id, Calle, Referencia, Latitud, Longitud)"
+
+    for resultado in prolog.query(consulta):
+        identificador = str(resultado["Id"])
+        calle = str(resultado["Calle"])
+        referencia = str(resultado["Referencia"])
+
+        nombre = calle if not referencia else f"{calle} - {referencia}"
+
+        paradas[identificador] = {
+            "id": identificador,
+            "nombre": nombre,
+            "latitud": float(resultado["Latitud"]),
+            "longitud": float(resultado["Longitud"])
+        }
+
+    # Devuelve en el orden en que fueron leidas desde Prolog
+    return list(paradas.values())
 
 def seleccionar_parada(paradas, mensaje):
     """
@@ -144,3 +175,24 @@ def cargar_grafo(prolog):
         grafo[origen].append(tramo)
 
     return grafo
+
+def calcular_costo(distancia, tiempo, transbordos):
+    tiempo_total = tiempo + transbordos * ESPERA_POR_TRANSBORDO
+    costo = (tiempo_total, transbordos, distancia)
+
+    return costo
+
+def buscar_rutas(grafo, origen, destino):
+    # El contador evita comparar estados cuando dos rutas tienen el mismo costo.
+    contador = count()
+
+    # parada, última línea, paradas visitadas, líneas usadas,
+    # distancia, tiempo base, cantidad de transbordos.
+    estado_inicial = (origen, None, (origen,), (), 0.0, 0.0, 0)
+
+    # la cola de prioridad hace que se analicen primero los recorridos
+    # que tienen mejor prioridad: tiempo, transbordos, distancia
+    cola = [((0, 0, 0), next(contador), 0, estado_inicial)]
+    rutas = []
+
+    while cola and len(rutas) < CANTIDAD_ALTERNATIVAS:
