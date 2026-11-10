@@ -25,3 +25,16 @@ for linea in lineas_elegidas:
         print(f"Linea {linea}: encontrada")
     else:
         print(f"Linea {linea}: no encontrada")
+
+"""""
+consulta la base de conocimiento para obtener información sobre una parada específica
+"""
+
+resultado = list(prolog.query("parada(p_9, Calle, Referencia, Lat, Lon)"))
+
+for parada in resultado:
+    print("identificador:", "p_9")
+    print("Calle:", parada["Calle"])
+    print("Referencia:", parada["Referencia"])
+    print("Latitud:", parada["Lat"])
+    print("Longitud:", parada["Lon"])
