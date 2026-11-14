@@ -1,198 +1,71 @@
+"""
+Punto de entrada principal del Sistema de Recomendación de Transporte Público (Bondi).
+Coordina la interacción entre la interfaz de usuario y las consultas lógicas a Prolog.
+"""
+from config import CANTIDAD_ALTERNATIVAS
+from servicios_prolog import cargar_prolog, obtener_lineas, obtener_paradas, buscar_rutas
+from interfaz import seleccionar_parada, mostrar_ruta
 
 
-from itertools import count
-from pathlib import Path
-import unicodedata
-from pyswip import Prolog
+def main():
+    print("=" * 66)
+    print("      SISTEMA DE RECOMENDACIÓN DE TRANSPORTE PÚBLICO (BONDI)     ")
+    print("=" * 66)
+    print("Iniciando y cargando base de conocimiento Prolog...")
 
-# Busca el archivo base.pl en la misma carpeta donde está main.py.
-ARCHIVO_PROLOG = Path(__file__).with_name("base.pl")
+    try:
+        prolog = cargar_prolog()
+        lineas = obtener_lineas(prolog)
+        paradas = obtener_paradas(prolog)
+    except Exception as e:
+        print(f"Error al inicializar Prolog: {e}")
+        return
 
-# Número de recorridos alternativos que se muestran para el criterio elegido.
-CANTIDAD_ALTERNATIVAS = 5
+    dict_paradas = {p["id"]: p for p in paradas}
+    print(f"Base cargada exitosamente: {len(lineas)} líneas disponibles y {len(paradas)} paradas.")
+    print("Podés ingresar el nombre de la calle, intersección o el código de parada (ej. 'p_9').")
+    print("Escribí 's' o 'salir' en cualquier momento para cancelar.\n")
 
-# Tiempo que se suma por cada cambio de línea.
-# Es una estimación para contemplar la espera; no representa un horario oficial.
-ESPERA_POR_TRANSBORDO = 8.0
+    while True:
+        print("-" * 66)
+        origen = seleccionar_parada(paradas, "Ingresá la parada de ORIGEN: ")
+        if origen is None:
+            print("Operación cancelada. ¡Hasta luego!")
+            break
 
-def normalizar(texto):
+        print(f"-> Origen seleccionado: {origen['nombre']} ({origen['id']})\n")
 
-    texto = unicodedata.normalize("NFD", texto.lower().strip())
-    return "".join(
-        caracter for caracter in texto
-        if unicodedata.category(caracter) != "Mn"
-    )
+        destino = seleccionar_parada(paradas, "Ingresá la parada de DESTINO: ")
+        if destino is None:
+            print("Operación cancelada. ¡Hasta luego!")
+            break
 
-def cargar_prolog():
-    """
-    ***
-    * Carga el archivo base.pl en el motor de Prolog.
-    *
-    * PRE: base.pl debe estar en la misma carpeta que main.py.
-    * POST: la base queda disponible para realizar consultas.
-    * @return: objeto Prolog.
-    """
-    if not ARCHIVO_PROLOG.exists():
-        raise FileNotFoundError(f"No se encontró {ARCHIVO_PROLOG.name}")
+        print(f"-> Destino seleccionado: {destino['nombre']} ({destino['id']})\n")
 
-    prolog = Prolog()
-    prolog.consult(str(ARCHIVO_PROLOG))
-    return prolog
+        if origen["id"] == destino["id"]:
+            print("El origen y el destino corresponden a la misma parada. No se requiere viaje.")
+            continue
 
+        print("Consultando a Prolog por las alternativas más rápidas...")
+        print(f" • Origen:  {origen['nombre']} ({origen['id']})")
+        print(f" • Destino: {destino['nombre']} ({destino['id']})")
+        print("Calculando recorridos en el motor lógico...")
 
-def obtener_lineas(prolog):
-    """
-    ***
-    * Obtiene todas las líneas declaradas en Prolog.
-    *
-    * PRE: Prolog debe estar cargado.
-    * POST: devuelve los identificadores de línea sin repetir.
-    * @return: lista de líneas.
-    """
-    lineas = []
+        rutas = buscar_rutas(prolog, origen["id"], destino["id"], CANTIDAD_ALTERNATIVAS)
 
-    for resultado in prolog.query("linea(Linea)"):
-        linea = str(resultado["Linea"])
-        if linea not in lineas:
-            lineas.append(linea)
-
-    return sorted(lineas)
-
-def obtener_paradas(prolog):
-    """
-    ***
-    * Lee las paradas desde los hechos parada/5.
-    *
-    * PRE: la base debe contener hechos parada/5.
-    * POST: devuelve las paradas con nombre y coordenadas.
-    * @return: lista de diccionarios con los datos de cada parada.
-    """
-    paradas = {}
-
-    consulta = "parada(Id, Calle, Referencia, Latitud, Longitud)"
-
-    for resultado in prolog.query(consulta):
-        identificador = str(resultado["Id"])
-        calle = str(resultado["Calle"])
-        referencia = str(resultado["Referencia"])
-
-        nombre = calle if not referencia else f"{calle} - {referencia}"
-
-        paradas[identificador] = {
-            "id": identificador,
-            "nombre": nombre,
-            "latitud": float(resultado["Latitud"]),
-            "longitud": float(resultado["Longitud"])
-        }
-
-    # Devuelve en el orden en que fueron leidas desde Prolog
-    return list(paradas.values())
-
-def seleccionar_parada(paradas, mensaje):
-    """
-    ***
-    * Permite elegir una parada por número, nombre o identificador.
-    *
-    * PRE: paradas debe contener los datos obtenidos desde Prolog.
-    * POST: devuelve la parada elegida o None si el usuario sale.
-    * @param paradas: lista de paradas disponibles.
-    * @param mensaje: mensaje que se muestra al usuario.
-    * @return: parada seleccionada o None.
-    """
-    seleccionada = None
-    terminar = False
-
-    while seleccionada is None and not terminar:
-        entrada = input(mensaje).strip()
-
-        if entrada.lower() in ("salir", "s"):
-            terminar = True
-        elif entrada.isdigit():
-            numero = int(entrada) - 1
-            if 0 <= numero < len(paradas):
-                seleccionada = paradas[numero]
-            else:
-                print("El número ingresado no es válido.")
+        if not rutas:
+            print("\nNo se encontró ninguna ruta o combinación disponible entre esas paradas.")
         else:
-            buscado = normalizar(entrada)
+            print(f"\nSe encontraron {len(rutas)} alternativa(s) recomendada(s), ordenadas por rapidez:")
+            for indice, ruta in enumerate(rutas, 1):
+                mostrar_ruta(ruta, dict_paradas, indice)
 
-            coincidencias = [
-                parada for parada in paradas
-                if buscado and buscado in normalizar(parada["nombre"])
-            ]
+        print("\n" + "-" * 66)
+        continuar = input("¿Deseás realizar otra consulta? (s/n): ").strip().lower()
+        if continuar not in ("s", "si", "sí", "y", "yes"):
+            print("¡Gracias por utilizar el sistema de recomendación de colectivos!")
+            break
 
-            if not coincidencias:
-                coincidencias = [
-                    parada for parada in paradas
-                    if entrada.lower() == parada["id"].lower()
-                ]
 
-            if len(coincidencias) == 1:
-                seleccionada = coincidencias[0]
-            elif len(coincidencias) > 1:
-                print("Se encontraron varias paradas:")
-                for numero, parada in enumerate(coincidencias[:20], 1):
-                    print(f"{numero:2}. {parada['nombre']} ({parada['id']})")
-
-                opcion = input(
-                    "Elegí un número o escribí otra búsqueda: "
-                ).strip()
-                if opcion.isdigit():
-                    numero = int(opcion) - 1
-                    if 0 <= numero < min(20, len(coincidencias)):
-                        seleccionada = coincidencias[numero]
-            else:
-                print("No se encontró esa parada. Probá nuevamente.")
-
-    return seleccionada
-
-def cargar_grafo(prolog):
-    """
-    ***
-    * Consulta los tramos de Prolog y arma un grafo de conexiones.
-    *
-    * PRE: la base debe contener hechos tramo/5.
-    * POST: cada parada queda relacionada con sus tramos de salida.
-    * @return: diccionario con los tramos agrupados por origen.
-    """
-    grafo = {}
-
-    consulta = "tramo(Linea, Origen, Destino, Distancia, Tiempo)"
-
-    for resultado in prolog.query(consulta):
-        origen = str(resultado["Origen"])
-
-        tramo = {
-            "linea": str(resultado["Linea"]),
-            "destino": str(resultado["Destino"]),
-            "distancia": float(resultado["Distancia"]),
-            "tiempo": float(resultado["Tiempo"])
-        }
-
-        if origen not in grafo:
-            grafo[origen] = []
-
-        grafo[origen].append(tramo)
-
-    return grafo
-
-def calcular_costo(distancia, tiempo, transbordos):
-    tiempo_total = tiempo + transbordos * ESPERA_POR_TRANSBORDO
-    costo = (tiempo_total, transbordos, distancia)
-
-    return costo
-
-def buscar_rutas(grafo, origen, destino):
-    # El contador evita comparar estados cuando dos rutas tienen el mismo costo.
-    contador = count()
-
-    # parada, última línea, paradas visitadas, líneas usadas,
-    # distancia, tiempo base, cantidad de transbordos.
-    estado_inicial = (origen, None, (origen,), (), 0.0, 0.0, 0)
-
-    # la cola de prioridad hace que se analicen primero los recorridos
-    # que tienen mejor prioridad: tiempo, transbordos, distancia
-    cola = [((0, 0, 0), next(contador), 0, estado_inicial)]
-    rutas = []
-
-    while cola and len(rutas) < CANTIDAD_ALTERNATIVAS:
+if __name__ == "__main__":
+    main()

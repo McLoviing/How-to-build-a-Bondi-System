@@ -2,6 +2,8 @@
 % BASE DE CONOCIMIENTO - RED DE TRANSPORTE PÚBLICO
 % ==================================================================
 
+:- use_module(library(heaps)).
+
 :- dynamic parada/5.
 :- dynamic linea/1.
 :- dynamic tramo/5.
@@ -4437,27 +4439,34 @@ misma_linea(Origen, Destino, Linea) :-
     pasa_por(Linea, Destino),
     Origen \= Destino.
 
-% 3. Ruta directa (recorrido completo sobre una misma línea sin transbordo)
-ruta_misma_linea(Origen, Destino, Linea, [Origen, Destino], Dist, Tiempo) :-
-    tramo(Linea, Origen, Destino, Dist, Tiempo).
+% 3. Listar líneas que pasan por una parada dada
+lineas_en_parada(Parada, Lineas) :-
+    findall(Linea, pasa_por(Linea, Parada), Lineas).
 
-ruta_misma_linea(Origen, Destino, Linea, [Origen|Resto], DistTotal, TiempoTotal) :-
-    tramo(Linea, Origen, Intermedio, Dist1, T1),
-    ruta_misma_linea_aux(Intermedio, Destino, Linea, [Origen], Resto, Dist2, T2),
-    DistTotal is Dist1 + Dist2,
-    TiempoTotal is T1 + T2.
+% 4. Paradas compartidas entre dos líneas (puntos potenciales de combinación)
+paradas_de_combinacion(Linea1, Linea2, Parada) :-
+    Linea1 \= Linea2,
+    pasa_por(Linea1, Parada),
+    pasa_por(Linea2, Parada).
 
-ruta_misma_linea_aux(Destino, Destino, _, _, [Destino], 0, 0).
-ruta_misma_linea_aux(Actual, Destino, Linea, Visitados, [Actual|Resto], DistTotal, TiempoTotal) :-
+% 5. Ruta directa sobre una misma línea (evitando ciclos y con poda rápida)
+ruta_misma_linea(Origen, Destino, Linea, Camino, DistTotal, TiempoTotal) :-
+    pasa_por(Linea, Origen),
+    pasa_por(Linea, Destino),
+    Origen \= Destino,
+    ruta_linea_dfs(Origen, Destino, Linea, [Origen], Camino, DistTotal, TiempoTotal).
+
+ruta_linea_dfs(Destino, Destino, _, _, [Destino], 0.0, 0.0).
+ruta_linea_dfs(Actual, Destino, Linea, Visitados, [Actual|Resto], DistTotal, TiempoTotal) :-
     Actual \= Destino,
-    \+ member(Actual, Visitados),
     tramo(Linea, Actual, Siguiente, Dist1, T1),
-    ruta_misma_linea_aux(Siguiente, Destino, Linea, [Actual|Visitados], Resto, Dist2, T2),
+    \+ member(Siguiente, Visitados),
+    ruta_linea_dfs(Siguiente, Destino, Linea, [Siguiente|Visitados], Resto, Dist2, T2),
     DistTotal is Dist1 + Dist2,
     TiempoTotal is T1 + T2.
 
-% 4. Ruta con un transbordo entre dos líneas distintas
-ruta_con_un_transbordo(Origen, Destino, Linea1, Transbordo, Linea2, DistTotal, TiempoTotal) :-
+% 6. Ruta con un transbordo entre dos líneas distintas
+ruta_con_un_transbordo(Origen, Destino, Linea1, Transbordo, Linea2, Camino1, Camino2, DistTotal, TiempoTotal) :-
     pasa_por(Linea1, Origen),
     pasa_por(Linea2, Destino),
     Linea1 \= Linea2,
@@ -4465,18 +4474,108 @@ ruta_con_un_transbordo(Origen, Destino, Linea1, Transbordo, Linea2, DistTotal, T
     pasa_por(Linea2, Transbordo),
     Transbordo \= Origen,
     Transbordo \= Destino,
-    ruta_misma_linea(Origen, Transbordo, Linea1, _, Dist1, T1),
-    ruta_misma_linea(Transbordo, Destino, Linea2, _, Dist2, T2),
+    ruta_misma_linea(Origen, Transbordo, Linea1, Camino1, Dist1, T1),
+    ruta_misma_linea(Transbordo, Destino, Linea2, Camino2, Dist2, T2),
     DistTotal is Dist1 + Dist2,
-    % Tiempo de espera estimado en transbordo: +8 minutos
+    % Tiempo estimado de espera por transbordo: 8.0 minutos
     TiempoTotal is T1 + T2 + 8.0.
 
-% 5. Listar líneas que pasan por una parada dada
-lineas_en_parada(Parada, Lineas) :-
-    findall(Linea, pasa_por(Linea, Parada), Lineas).
+% ==================================================================
+% 7. MOTOR DE BÚSQUEDA ÓPTIMA EN EL GRAFO (DIJKSTRA EN PROLOG)
+% ==================================================================
+% Resuelve en el paradigma lógico la búsqueda de las N rutas más rápidas
+% priorizando: 1) Menor tiempo total (viaje + penalización por transbordos),
+%              2) Menor cantidad de transbordos,
+%              3) Menor distancia recorrida.
 
-% 6. Paradas compartidas entre dos líneas (puntos potenciales de combinación)
-paradas_de_combinacion(Linea1, Linea2, Parada) :-
-    Linea1 \= Linea2,
-    pasa_por(Linea1, Parada),
-    pasa_por(Linea2, Parada).
+buscar_rutas_optimas(Origen, Destino, MaxRutas, Rutas) :-
+    empty_heap(H0),
+    EstadoInicial = estado(Origen, none, [Origen], [], 0.0, 0.0, []),
+    add_to_heap(H0, costo(0.0, 0, 0.0), EstadoInicial, HeapInicial),
+    dijkstra_loop(HeapInicial, Destino, MaxRutas, [], [], Rutas).
+
+dijkstra_loop(Heap, _, MaxRutas, Acc, _, Rutas) :-
+    (   empty_heap(Heap)
+    ;   length(Acc, Cant), Cant >= MaxRutas
+    ),
+    !,
+    reverse(Acc, Rutas).
+
+dijkstra_loop(Heap, Destino, MaxRutas, Acc, Visitas, Rutas) :-
+    get_from_heap(Heap, costo(TiempoTotal, Transbordos, DistTotal), Estado, RestoHeap),
+    Estado = estado(Actual, UltimaLinea, ParadasVisitadas, LineasUsadas, Dist, TiempoViaje, Tramos),
+    (   Actual == Destino
+    ->  reverse(ParadasVisitadas, ParadasOrdenadas),
+        reverse(Tramos, TramosOrdenados),
+        Ruta = ruta(TiempoTotal, TiempoViaje, Transbordos, DistTotal, LineasUsadas, ParadasOrdenadas, TramosOrdenados),
+        (   \+ member(ruta(_, _, _, _, LineasUsadas, ParadasOrdenadas, _), Acc)
+        ->  NuevoAcc = [Ruta|Acc]
+        ;   NuevoAcc = Acc
+        ),
+        dijkstra_loop(RestoHeap, Destino, MaxRutas, NuevoAcc, Visitas, Rutas)
+    ;   conteo_visitas(Actual, UltimaLinea, Visitas, Conteo),
+        (   Conteo >= 2
+        ->  dijkstra_loop(RestoHeap, Destino, MaxRutas, Acc, Visitas, Rutas)
+        ;   NuevasVisitas = [v(Actual, UltimaLinea)|Visitas],
+            expandir_vecinos(Actual, UltimaLinea, ParadasVisitadas, LineasUsadas, Dist, TiempoViaje, Transbordos, Tramos, Vecinos),
+            agregar_a_heap(Vecinos, RestoHeap, NuevoHeap),
+            dijkstra_loop(NuevoHeap, Destino, MaxRutas, Acc, NuevasVisitas, Rutas)
+        )
+    ).
+
+conteo_visitas(Actual, Linea, Visitas, Conteo) :-
+    findall(1, member(v(Actual, Linea), Visitas), L),
+    length(L, Conteo).
+
+expandir_vecinos(Actual, UltimaLinea, Visitados, Lineas, Dist, TiempoViaje, Transbordos, Tramos, Vecinos) :-
+    findall(
+        costo(NuevoTiempoTotal, NuevosTrans, NuevaDist)-
+        estado(Siguiente, LineaTramo, [Siguiente|Visitados], NuevasLineas, NuevaDist, NuevoTiempoViaje, [tramo(LineaTramo, Actual, Siguiente, D, T)|Tramos]),
+        (   tramo(LineaTramo, Actual, Siguiente, D, T),
+            \+ member(Siguiente, Visitados),
+            (   UltimaLinea == none
+            ->  NuevosTrans = 0,
+                NuevasLineas = [LineaTramo]
+            ;   LineaTramo \== UltimaLinea
+            ->  NuevosTrans is Transbordos + 1,
+                append(Lineas, [LineaTramo], NuevasLineas)
+            ;   NuevosTrans = Transbordos,
+                NuevasLineas = Lineas
+            ),
+            NuevaDist is Dist + D,
+            NuevoTiempoViaje is TiempoViaje + T,
+            NuevoTiempoTotal is NuevoTiempoViaje + (NuevosTrans * 8.0)
+        ),
+        Vecinos
+    ).
+
+agregar_a_heap([], Heap, Heap).
+agregar_a_heap([Costo-Estado|Resto], Heap0, HeapFinal) :-
+    add_to_heap(Heap0, Costo, Estado, Heap1),
+    agregar_a_heap(Resto, Heap1, HeapFinal).
+
+% Agrupa tramos consecutivos de la misma línea en etapas de viaje
+agrupar_en_etapas([], []).
+agrupar_en_etapas([tramo(L, Orig, Dest, D, T)|Resto], Etapas) :-
+    agrupar_etapas_aux(Resto, L, Orig, Dest, 1, D, T, Etapas).
+
+agrupar_etapas_aux([tramo(L, _, SigDest, D, T)|Resto], L, Orig, _, Cant, DistAcc, TAcc, Etapas) :-
+    !,
+    NuevaCant is Cant + 1,
+    NuevaDist is DistAcc + D,
+    NuevoT is TAcc + T,
+    agrupar_etapas_aux(Resto, L, Orig, SigDest, NuevaCant, NuevaDist, NuevoT, Etapas).
+
+agrupar_etapas_aux([tramo(NuevaL, NuevaOrig, SigDest, D, T)|Resto], L, Orig, Dest, Cant, DistAcc, TAcc, [etapa(L, Orig, Dest, Cant, DistAcc, TAcc)|OtrasEtapas]) :-
+    agrupar_etapas_aux(Resto, NuevaL, NuevaOrig, SigDest, 1, D, T, OtrasEtapas).
+
+agrupar_etapas_aux([], L, Orig, Dest, Cant, DistAcc, TAcc, [etapa(L, Orig, Dest, Cant, DistAcc, TAcc)]).
+
+% Predicados amigables para consultar desde Python con PySwip
+buscar_ruta(Origen, Destino, TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas, Etapas) :-
+    buscar_rutas_optimas(Origen, Destino, 5, Rutas),
+    member(ruta(TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas, Tramos), Rutas),
+    agrupar_en_etapas(Tramos, Etapas).
+
+buscar_ruta(Origen, Destino, TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas) :-
+    buscar_ruta(Origen, Destino, TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas, _).
