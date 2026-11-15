@@ -2,6 +2,7 @@
 Servicio de comunicación y consultas con el motor de Prolog (SWI-Prolog / PySwip).
 Delega en Prolog todo el procesamiento lógico y la búsqueda de caminos en el grafo.
 """
+import re
 from pathlib import Path
 from pyswip import Prolog
 from config import ARCHIVO_PROLOG, CANTIDAD_ALTERNATIVAS
@@ -64,12 +65,30 @@ def obtener_paradas(prolog: Prolog) -> list:
     return list(paradas.values())
 
 
+# PySwip (>= 0.3) devuelve los términos compuestos como texto, por ejemplo:
+#   "etapa(41, p_379, p_217, 4, 3306.8, 11.1)"
+_PATRON_ETAPA = re.compile(r"^etapa\((.*)\)$", re.DOTALL)
+
+
 def _procesar_etapa_prolog(etapa_obj) -> dict:
-    """Extrae los datos de un término etapa(...) retornado por Prolog."""
+    """Extrae los datos de un término etapa(...) retornado por Prolog.
+
+    Acepta tres representaciones, según la versión de PySwip:
+    objeto con .args, lista/tupla, o cadena de texto "etapa(...)".
+    """
     if hasattr(etapa_obj, "args"):
         l, o, d, cant, dist, t = etapa_obj.args
     elif isinstance(etapa_obj, (list, tuple)) and len(etapa_obj) >= 6:
         l, o, d, cant, dist, t = etapa_obj[:6]
+    elif isinstance(etapa_obj, str):
+        coincidencia = _PATRON_ETAPA.match(etapa_obj.strip())
+        if not coincidencia:
+            return {}
+        # Los átomos (línea, paradas) y los números no contienen comas.
+        partes = [x.strip().strip("'") for x in coincidencia.group(1).split(",")]
+        if len(partes) != 6:
+            return {}
+        l, o, d, cant, dist, t = partes
     else:
         return {}
 
