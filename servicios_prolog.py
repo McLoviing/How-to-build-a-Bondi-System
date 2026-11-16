@@ -1,117 +1,205 @@
 """
 Servicio de comunicación y consultas con el motor de Prolog (SWI-Prolog / PySwip).
-Delega en Prolog todo el procesamiento lógico y la búsqueda de caminos en el grafo.
+Implementa:
+- Inyección automática de DLLs de SWI-Prolog en Windows.
+- Exclusión mutua (RLock) para seguridad multihilo en FastAPI.
+- Inicialización topológica automática (deduplicación + Spatial Hash peatonal).
+- Validación Fail-Fast de predicados y sanitización estricta anti-inyección.
+- Puente JSON nativo (buscar_rutas_json/4) de cero-parsing.
 """
+import json
+import logging
+import os
 import re
+import sys
+import threading
 from pathlib import Path
+from typing import List, Dict, Any
+
+# Garantizar resolución de libswipl.dll en Windows antes de importar pyswip
+if sys.platform == "win32":
+    _ruta_swipl_bin = Path(r"C:\Program Files\swipl\bin")
+    if _ruta_swipl_bin.is_dir():
+        os.environ["PATH"] = f"{_ruta_swipl_bin};{os.environ.get('PATH', '')}"
+        if hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(str(_ruta_swipl_bin))
+
 from pyswip import Prolog
 from config import ARCHIVO_PROLOG, CANTIDAD_ALTERNATIVAS
+
+logger = logging.getLogger(__name__)
+
+# Candado reentrante para proteger la frontera C-Python de PySwip frente a peticiones concurrentes
+_PROLOG_LOCK = threading.RLock()
+
+_PATRON_ATOMO_SEGURO = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_PATRON_NATURAL_SORT = re.compile(r"(\d+)")
+
+
+def _validar_atomo_prolog(atomo: str) -> str:
+    """Sanitiza identificadores para impedir inyección de código en SWI-Prolog."""
+    if not isinstance(atomo, str) or not _PATRON_ATOMO_SEGURO.match(atomo):
+        raise ValueError(f"Identificador inválido o inseguro para Prolog: '{atomo}'")
+    return atomo
+
+
+def _clave_orden_natural(texto: str) -> list:
+    """Ordenamiento natural homogéneo para líneas mixtas ('2', '10', '51A')."""
+    partes = _PATRON_NATURAL_SORT.split(texto.lower())
+    return [
+        (0, int(parte)) if parte.isdigit() else (1, parte)
+        for parte in partes if parte
+    ]
+
+
+def _verificar_contrato_prolog(prolog: Prolog, ruta_archivo: Path) -> None:
+    """Patrón Fail-Fast: verifica que base.pl exponga todos los predicados requeridos."""
+    predicados_requeridos = [
+        "inicializar_grafo/0",
+        "linea/1",
+        "parada/5",
+        "tramo/5",
+        "buscar_rutas_json/4"
+    ]
+    for pred in predicados_requeridos:
+        q = prolog.query(f"current_predicate({pred})")
+        try:
+            if next(q, None) is None:
+                raise RuntimeError(
+                    f"Contrato roto con Prolog: falta el predicado '{pred}' en {ruta_archivo}"
+                )
+        finally:
+            q.close()
 
 
 def cargar_prolog(ruta_archivo: Path = ARCHIVO_PROLOG) -> Prolog:
     """
-    Carga el archivo base.pl en el motor de Prolog.
-    
-    PRE: base.pl debe existir en la ruta indicada.
-    POST: base queda consultada y lista para resolver consultas lógicas.
+    Carga la base de conocimiento, verifica contratos, deduplica tramos
+    y precalcula los transbordos peatonales mediante indexación espacial O(V).
     """
-    if not ruta_archivo.exists():
-        raise FileNotFoundError(f"No se encontró el archivo: {ruta_archivo}")
+    ruta_resuelta = ruta_archivo.resolve()
+    if not ruta_resuelta.is_file():
+        raise FileNotFoundError(f"No se encontró la base de conocimiento Prolog en: {ruta_resuelta}")
 
-    prolog = Prolog()
-    # Se usa as_posix() para evitar conflictos con barras invertidas en Windows
-    prolog.consult(ruta_archivo.resolve().as_posix())
-    return prolog
+    with _PROLOG_LOCK:
+        prolog = Prolog()
+        prolog.consult(ruta_resuelta.as_posix())
+
+        _verificar_contrato_prolog(prolog, ruta_resuelta)
+
+        # Ejecutar inicialización topológica del grafo multimodal
+        q_init = prolog.query("inicializar_grafo.")
+        try:
+            if next(q_init, None) is None:
+                raise RuntimeError("Fallo al ejecutar inicializar_grafo/0 en SWI-Prolog.")
+        finally:
+            q_init.close()
+
+        # Confirmar que los tramos peatonales quedaron assertados en memoria
+        q_walk = prolog.query("once(tramo('CAMINANDO', _, _, _, _))")
+        try:
+            if next(q_walk, None) is None:
+                logger.warning("Advertencia: No se generaron arcos 'CAMINANDO' en memoria.")
+        finally:
+            q_walk.close()
+
+        return prolog
 
 
-def obtener_lineas(prolog: Prolog) -> list:
-    """
-    Consulta las líneas de transporte disponibles en Prolog.
-    PRE: Prolog inicializado.
-    POST: Devuelve la lista ordenada de identificadores de línea.
-    """
-    lineas = []
-    for resultado in prolog.query("linea(Linea)"):
-        linea = str(resultado["Linea"])
-        if linea not in lineas:
-            lineas.append(linea)
+def obtener_lineas(prolog: Prolog) -> List[str]:
+    """Obtiene todas las líneas únicas registradas en Prolog ordenadas naturalmente."""
+    lineas_unicas = set()
+    with _PROLOG_LOCK:
+        query = prolog.query("linea(Linea)")
+        try:
+            for resultado in query:
+                linea = str(resultado["Linea"]).strip("'")
+                if linea:
+                    lineas_unicas.add(linea)
+        finally:
+            query.close()
 
-    return sorted(lineas, key=lambda x: int(x) if x.isdigit() else x)
+    return sorted(lineas_unicas, key=_clave_orden_natural)
 
 
-def obtener_paradas(prolog: Prolog) -> list:
-    """
-    Lee las paradas declaradas como hechos parada/5 en Prolog.
-    PRE: La base de Prolog debe contener los hechos parada/5.
-    POST: Devuelve una lista de diccionarios con id, nombre y coordenadas.
-    """
-    paradas = {}
-    consulta = "parada(Id, Calle, Referencia, Latitud, Longitud)"
+def obtener_paradas(prolog: Prolog) -> List[Dict[str, Any]]:
+    """Extrae los hechos parada/5 deduplicados por identificador."""
+    paradas: Dict[str, Dict[str, Any]] = {}
+    with _PROLOG_LOCK:
+        query = prolog.query("parada(Id, Calle, Referencia, Latitud, Longitud)")
+        try:
+            for resultado in query:
+                identificador = str(resultado["Id"]).strip("'")
+                if identificador in paradas:
+                    continue
 
-    for resultado in prolog.query(consulta):
-        identificador = str(resultado["Id"])
-        calle = str(resultado["Calle"])
-        referencia = str(resultado["Referencia"])
+                calle = str(resultado["Calle"]).strip("'")
+                referencia = str(resultado["Referencia"]).strip("'")
+                nombre = calle if not referencia or referencia == "none" else f"{calle} - {referencia}"
 
-        nombre = calle if not referencia or referencia == "''" else f"{calle} - {referencia}"
-
-        paradas[identificador] = {
-            "id": identificador,
-            "nombre": nombre,
-            "latitud": float(resultado["Latitud"]),
-            "longitud": float(resultado["Longitud"])
-        }
+                paradas[identificador] = {
+                    "id": identificador,
+                    "nombre": nombre,
+                    "latitud": float(resultado["Latitud"]),
+                    "longitud": float(resultado["Longitud"])
+                }
+        finally:
+            query.close()
 
     return list(paradas.values())
 
 
-# PySwip (>= 0.3) devuelve los términos compuestos como texto, por ejemplo:
-#   "etapa(41, p_379, p_217, 4, 3306.8, 11.1)"
-_PATRON_ETAPA = re.compile(r"^etapa\((.*)\)$", re.DOTALL)
-
-
-def _procesar_etapa_prolog(etapa_obj) -> dict:
-    """Extrae los datos de un término etapa(...) retornado por Prolog.
-
-    Acepta tres representaciones, según la versión de PySwip:
-    objeto con .args, lista/tupla, o cadena de texto "etapa(...)".
+def _construir_transbordos_detalle(etapas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    if hasattr(etapa_obj, "args"):
-        l, o, d, cant, dist, t = etapa_obj.args
-    elif isinstance(etapa_obj, (list, tuple)) and len(etapa_obj) >= 6:
-        l, o, d, cant, dist, t = etapa_obj[:6]
-    elif isinstance(etapa_obj, str):
-        coincidencia = _PATRON_ETAPA.match(etapa_obj.strip())
-        if not coincidencia:
-            return {}
-        # Los átomos (línea, paradas) y los números no contienen comas.
-        partes = [x.strip().strip("'") for x in coincidencia.group(1).split(",")]
-        if len(partes) != 6:
-            return {}
-        l, o, d, cant, dist, t = partes
-    else:
-        return {}
-
-    return {
-        "linea": str(l),
-        "origen": str(o),
-        "destino": str(d),
-        "paradas_intermedias": int(cant),
-        "distancia": float(dist),
-        "tiempo": float(t)
-    }
-
-
-def buscar_rutas(prolog: Prolog, origen_id: str, destino_id: str, max_rutas: int = CANTIDAD_ALTERNATIVAS) -> list:
+    Analiza la secuencia de etapas para extraer combinaciones directas en parada
+    y combinaciones con caminata intermedia entre paradas cercanas.
     """
-    Ejecuta la búsqueda de rutas óptimas directamente en Prolog.
-    Todo el trabajo pesado de recorrido del grafo, evaluación de transbordos
-    y cálculo de tiempos se realiza en el motor de inferencia de Prolog.
+    detalle = []
+    for idx in range(len(etapas) - 1):
+        actual = etapas[idx]
+        siguiente = etapas[idx + 1]
 
-    PRE: origen_id y destino_id deben ser átomos válidos en Prolog (ej. 'p_9').
-    POST: Devuelve hasta max_rutas alternativas con métricas, etapas y paradas de transbordo exactas.
+        if str(actual.get("linea")).upper() == "CAMINANDO":
+            continue
+
+        if str(siguiente.get("linea")).upper() != "CAMINANDO":
+            detalle.append({
+                "parada": actual["destino"],
+                "parada_subida": actual["destino"],
+                "requiere_caminata": False,
+                "metros_caminata": 0.0,
+                "bajar_de": str(actual["linea"]),
+                "subir_a": str(siguiente["linea"])
+            })
+        elif idx + 2 < len(etapas):
+            colectivo_sig = etapas[idx + 2]
+            if str(colectivo_sig.get("linea")).upper() != "CAMINANDO":
+                detalle.append({
+                    "parada": actual["destino"],
+                    "parada_subida": siguiente["destino"],
+                    "requiere_caminata": True,
+                    "metros_caminata": round(float(siguiente.get("distancia", 0.0)), 1),
+                    "bajar_de": str(actual["linea"]),
+                    "subir_a": str(colectivo_sig["linea"])
+                })
+    return detalle
+
+
+def buscar_rutas(
+    prolog: Prolog,
+    origen_id: str,
+    destino_id: str,
+    max_rutas: int = CANTIDAD_ALTERNATIVAS
+) -> List[Dict[str, Any]]:
     """
-    if origen_id == destino_id:
+    Consulta las rutas óptimas multimodales a través del puente JSON de SWI-Prolog
+    bajo exclusión mutua thread-safe.
+    """
+    origen_seguro = _validar_atomo_prolog(origen_id)
+    destino_seguro = _validar_atomo_prolog(destino_id)
+    limite = max(1, min(int(max_rutas), 15))
+
+    if origen_seguro == destino_seguro:
         return [{
             "tiempo_total": 0.0,
             "tiempo_viaje": 0.0,
@@ -119,69 +207,29 @@ def buscar_rutas(prolog: Prolog, origen_id: str, destino_id: str, max_rutas: int
             "distancia": 0.0,
             "transbordos": 0,
             "lineas": [],
-            "paradas": [origen_id],
+            "paradas": [origen_seguro],
             "etapas": [],
             "transbordos_detalle": []
         }]
 
-    consulta = (
-        f"buscar_ruta({origen_id}, {destino_id}, "
-        "TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas, Etapas)"
-    )
+    consulta = f"buscar_rutas_json({origen_seguro}, {destino_seguro}, {limite}, JsonSalida)"
 
-    rutas = []
-    for res in prolog.query(consulta):
-        tiempo_total = float(res["TiempoTotal"])
-        tiempo_viaje = float(res["TiempoViaje"])
-        transbordos = int(res["Transbordos"])
-        distancia = float(res["DistTotal"])
+    with _PROLOG_LOCK:
+        query = prolog.query(consulta)
+        try:
+            resultado = next(query, None)
+            if not resultado or "JsonSalida" not in resultado:
+                return []
 
-        # PySwip devuelve los átomos como objetos o cadenas
-        lineas = [str(linea) for linea in res["Lineas"]]
-        paradas = [str(parada) for parada in res["Paradas"]]
+            raw_json = str(resultado["JsonSalida"])
+            rutas: List[Dict[str, Any]] = json.loads(raw_json)
+        except Exception as exc:
+            logger.exception(f"Fallo en consulta Prolog ({origen_seguro} -> {destino_seguro})")
+            raise RuntimeError(f"Error ejecutando motor lógico: {exc}") from exc
+        finally:
+            query.close()
 
-        # Procesar etapas calculadas por Prolog
-        etapas = []
-        if "Etapas" in res and res["Etapas"]:
-            for e in res["Etapas"]:
-                e_dict = _procesar_etapa_prolog(e)
-                if e_dict:
-                    etapas.append(e_dict)
-
-        # Si por compatibilidad no hubiese etapas pero sí paradas y 1 línea:
-        if not etapas and len(lineas) == 1 and len(paradas) >= 2:
-            etapas = [{
-                "linea": lineas[0],
-                "origen": paradas[0],
-                "destino": paradas[-1],
-                "paradas_intermedias": len(paradas) - 1,
-                "distancia": distancia,
-                "tiempo": tiempo_viaje
-            }]
-
-        # Identificar exactamente las paradas de transbordo (dónde bajar y dónde subir)
-        transbordos_detalle = []
-        for i in range(len(etapas) - 1):
-            parada_transbordo = etapas[i]["destino"]
-            transbordos_detalle.append({
-                "parada": parada_transbordo,
-                "bajar_de": etapas[i]["linea"],
-                "subir_a": etapas[i + 1]["linea"]
-            })
-
-        rutas.append({
-            "tiempo_total": tiempo_total,
-            "tiempo_viaje": tiempo_viaje,
-            "tiempo_espera": round(tiempo_total - tiempo_viaje, 2),
-            "distancia": distancia,
-            "transbordos": transbordos,
-            "lineas": lineas,
-            "paradas": paradas,
-            "etapas": etapas,
-            "transbordos_detalle": transbordos_detalle
-        })
-
-        if len(rutas) >= max_rutas:
-            break
+    for ruta in rutas:
+        ruta["transbordos_detalle"] = _construir_transbordos_detalle(ruta.get("etapas", []))
 
     return rutas

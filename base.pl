@@ -3,6 +3,8 @@
 % ==================================================================
 
 :- use_module(library(heaps)).
+:- use_module(library(assoc)).
+:- use_module(library(http/json)).
 
 :- dynamic parada/5.
 :- dynamic linea/1.
@@ -4481,101 +4483,243 @@ ruta_con_un_transbordo(Origen, Destino, Linea1, Transbordo, Linea2, Camino1, Cam
     TiempoTotal is T1 + T2 + 8.0.
 
 % ==================================================================
-% 7. MOTOR DE BÚSQUEDA ÓPTIMA EN EL GRAFO (DIJKSTRA EN PROLOG)
+% UTILIDADES GEOESPACIALES RÁPIDAS (PROYECCIÓN EQUIRECTANGULAR WGS84)
 % ==================================================================
-% Resuelve en el paradigma lógico la búsqueda de las N rutas más rápidas
-% priorizando: 1) Menor tiempo total (viaje + penalización por transbordos),
-%              2) Menor cantidad de transbordos,
-%              3) Menor distancia recorrida.
+% Calibrado para San Carlos de Bariloche (Latitud media: -41.13°)
+% K_lat = 111132.95 m/deg | K_lon = 111132.95 * cos(-41.13°) = 83715.4 m/deg
 
+distancia_rapida_metros(Lat1, Lon1, Lat2, Lon2, Metros) :-
+    DLat is (Lat2 - Lat1) * 111132.95,
+    DLon is (Lon2 - Lon1) * 83715.4,
+    Metros is sqrt(DLat * DLat + DLon * DLon).
+
+distancia_entre_paradas(P1, P2, Metros) :-
+    parada(P1, _, _, Lat1, Lon1),
+    parada(P2, _, _, Lat2, Lon2),
+    distancia_rapida_metros(Lat1, Lon1, Lat2, Lon2, Metros).
+
+% Velocidad promedio peatonal urbana: 1.25 m/s (4.5 km/h = 75 m/min)
+tiempo_caminata_minutos(Metros, Minutos) :-
+    Minutos is Metros / 75.0.
+
+% ==================================================================
+% 1. INICIALIZACIÓN Y OPTIMIZACIÓN DEL GRAFO EN MEMORIA (O(V) SPATIAL HASH)
+% ==================================================================
+:- dynamic celda_parada/3.
+
+inicializar_grafo :-
+    limpiar_tramos_duplicados,
+    precalcular_caminatas(300.0).
+
+% Elimina tramos duplicados (exactos o subóptimos) dejando solo el más corto
+limpiar_tramos_duplicados :-
+    findall(tramo(L, P1, P2, D, T), tramo(L, P1, P2, D, T), Todos),
+    sort(Todos, UnicosOrdenados), % sort/2 ordena por argumentos y elimina duplicados exactos
+    retractall(tramo(_, _, _, _, _)),
+    assertar_mejores_tramos(UnicosOrdenados).
+
+assertar_mejores_tramos([]).
+assertar_mejores_tramos([tramo(L, P1, P2, D, T)|Resto]) :-
+    assertz(tramo(L, P1, P2, D, T)),
+    descartar_peores_mismo_arco(Resto, L, P1, P2, RestoFiltrado),
+    assertar_mejores_tramos(RestoFiltrado).
+
+descartar_peores_mismo_arco([tramo(L, P1, P2, _, _)|Resto], L, P1, P2, Filtrado) :-
+    !,
+    descartar_peores_mismo_arco(Resto, L, P1, P2, Filtrado).
+descartar_peores_mismo_arco(Resto, _, _, _, Resto).
+
+% Indexación espacial O(V) usando grilla de ~330m x ~330m
+precalcular_caminatas(MaxMetros) :-
+    retractall(tramo('CAMINANDO', _, _, _, _)),
+    retractall(celda_parada(_, _, _)),
+    forall(
+        parada(P, _, _, Lat, Lon),
+        (
+            CX is floor(Lon / 0.0040),
+            CY is floor(Lat / 0.0030),
+            assertz(celda_parada(CX-CY, P, coord(Lat, Lon)))
+        )
+    ),
+    forall(
+        (
+            celda_parada(CX-CY, P1, coord(Lat1, Lon1)),
+            between(-1, 1, DX),
+            between(-1, 1, DY),
+            NX is CX + DX,
+            NY is CY + DY,
+            celda_parada(NX-NY, P2, coord(Lat2, Lon2)),
+            P1 \== P2,
+            distancia_rapida_metros(Lat1, Lon1, Lat2, Lon2, D),
+            D =< MaxMetros
+        ),
+        (
+            tiempo_caminata_minutos(D, T),
+            assertz(tramo('CAMINANDO', P1, P2, D, T))
+        )
+    ),
+    retractall(celda_parada(_, _, _)).
+
+% ==================================================================
+% 2. MOTOR DE BÚSQUEDA A* MULTIMODAL CON PODA DE RECURSOS (RCSP)
+% ==================================================================
+
+% Heurística admisible: tiempo mínimo en línea recta a velocidad máxima urbana (~60 km/h = 1000 m/min)
+heuristica_tiempo(Nodo, Destino, H) :-
+    distancia_entre_paradas(Nodo, Destino, DistMetros),
+    H is DistMetros / 1000.0.
+
+% Estado: estado(Actual, UltimaLineaReal, UltimoModo, ParadasVis, LineasUsadas, Dist, DistCaminada, TiempoViaje, Transbordos, Tramos)
 buscar_rutas_optimas(Origen, Destino, MaxRutas, Rutas) :-
     empty_heap(H0),
-    EstadoInicial = estado(Origen, none, [Origen], [], 0.0, 0.0, []),
-    add_to_heap(H0, costo(0.0, 0, 0.0), EstadoInicial, HeapInicial),
-    dijkstra_loop(HeapInicial, Destino, MaxRutas, [], [], Rutas).
+    empty_assoc(Visitas0),
+    heuristica_tiempo(Origen, Destino, HIni),
+    EstadoInicial = estado(Origen, none, none, [Origen], [], 0.0, 0.0, 0.0, 0, []),
+    add_to_heap(H0, costo(HIni, 0, 0.0), EstadoInicial, HeapInicial),
+    astar_loop(HeapInicial, Destino, MaxRutas, [], Visitas0, Rutas).
 
-dijkstra_loop(Heap, _, MaxRutas, Acc, _, Rutas) :-
+astar_loop(Heap, _, MaxRutas, Acc, _, Rutas) :-
     (   empty_heap(Heap)
     ;   length(Acc, Cant), Cant >= MaxRutas
     ),
     !,
     reverse(Acc, Rutas).
 
-dijkstra_loop(Heap, Destino, MaxRutas, Acc, Visitas, Rutas) :-
-    get_from_heap(Heap, costo(TiempoTotal, Transbordos, DistTotal), Estado, RestoHeap),
-    Estado = estado(Actual, UltimaLinea, ParadasVisitadas, LineasUsadas, Dist, TiempoViaje, Tramos),
+astar_loop(Heap, Destino, MaxRutas, Acc, Visitas, Rutas) :-
+    get_from_heap(Heap, _, Estado, RestoHeap),
+    Estado = estado(Actual, UltimaLineaReal, _UltimoModo, ParadasVis, LineasUsadas, Dist, _DistCam, TiempoViaje, Transbordos, Tramos),
+    TiempoTotal is TiempoViaje + (Transbordos * 8.0),
     (   Actual == Destino
-    ->  reverse(ParadasVisitadas, ParadasOrdenadas),
+    ->  reverse(ParadasVis, ParadasOrdenadas),
         reverse(Tramos, TramosOrdenados),
-        Ruta = ruta(TiempoTotal, TiempoViaje, Transbordos, DistTotal, LineasUsadas, ParadasOrdenadas, TramosOrdenados),
-        (   \+ member(ruta(_, _, _, _, LineasUsadas, ParadasOrdenadas, _), Acc)
+        Ruta = ruta(TiempoTotal, TiempoViaje, Transbordos, Dist, LineasUsadas, ParadasOrdenadas, TramosOrdenados),
+        % Garantizar que cada alternativa ofrezca una combinación de líneas distinta
+        (   \+ member(ruta(_, _, _, _, LineasUsadas, _, _), Acc)
         ->  NuevoAcc = [Ruta|Acc]
         ;   NuevoAcc = Acc
         ),
-        dijkstra_loop(RestoHeap, Destino, MaxRutas, NuevoAcc, Visitas, Rutas)
-    ;   conteo_visitas(Actual, UltimaLinea, Visitas, Conteo),
+        astar_loop(RestoHeap, Destino, MaxRutas, NuevoAcc, Visitas, Rutas)
+    ;   ClaveVisita = Actual-UltimaLineaReal,
+        (   get_assoc(ClaveVisita, Visitas, Conteo) -> true ; Conteo = 0 ),
         (   Conteo >= 2
-        ->  dijkstra_loop(RestoHeap, Destino, MaxRutas, Acc, Visitas, Rutas)
-        ;   NuevasVisitas = [v(Actual, UltimaLinea)|Visitas],
-            expandir_vecinos(Actual, UltimaLinea, ParadasVisitadas, LineasUsadas, Dist, TiempoViaje, Transbordos, Tramos, Vecinos),
-            agregar_a_heap(Vecinos, RestoHeap, NuevoHeap),
-            dijkstra_loop(NuevoHeap, Destino, MaxRutas, Acc, NuevasVisitas, Rutas)
+        ->  astar_loop(RestoHeap, Destino, MaxRutas, Acc, Visitas, Rutas)
+        ;   NuevoConteo is Conteo + 1,
+            put_assoc(ClaveVisita, Visitas, NuevoConteo, NuevasVisitas),
+            expandir_vecinos_astar(Estado, Destino, Vecinos),
+            agregar_lista_a_heap(Vecinos, RestoHeap, NuevoHeap),
+            astar_loop(NuevoHeap, Destino, MaxRutas, Acc, NuevasVisitas, Rutas)
         )
     ).
 
-conteo_visitas(Actual, Linea, Visitas, Conteo) :-
-    findall(1, member(v(Actual, Linea), Visitas), L),
-    length(L, Conteo).
-
-expandir_vecinos(Actual, UltimaLinea, Visitados, Lineas, Dist, TiempoViaje, Transbordos, Tramos, Vecinos) :-
+expandir_vecinos_astar(
+    estado(Actual, UltimaLineaReal, UltimoModo, Visitados, Lineas, Dist, DistCam, TiempoViaje, Transbordos, Tramos),
+    Destino,
+    Vecinos
+) :-
     findall(
-        costo(NuevoTiempoTotal, NuevosTrans, NuevaDist)-
-        estado(Siguiente, LineaTramo, [Siguiente|Visitados], NuevasLineas, NuevaDist, NuevoTiempoViaje, [tramo(LineaTramo, Actual, Siguiente, D, T)|Tramos]),
-        (   tramo(LineaTramo, Actual, Siguiente, D, T),
+        costo(FScore, NuevosTrans, NuevaDist)-
+        estado(Siguiente, NuevaUltimaLineaReal, LineaTramo, [Siguiente|Visitados], NuevasLineas, NuevaDist, NuevaDistCam, NuevoTiempoViaje, NuevosTrans, [tramo(LineaTramo, Actual, Siguiente, D, T)|Tramos]),
+        (
+            tramo(LineaTramo, Actual, Siguiente, D, T),
+            % 1. Evitar ciclos de paradas
             \+ member(Siguiente, Visitados),
-            (   UltimaLinea == none
-            ->  NuevosTrans = 0,
-                NuevasLineas = [LineaTramo]
-            ;   LineaTramo \== UltimaLinea
-            ->  NuevosTrans is Transbordos + 1,
-                append(Lineas, [LineaTramo], NuevasLineas)
-            ;   NuevosTrans = Transbordos,
-                NuevasLineas = Lineas
+            % 2. Prohibir dos tramos peatonales consecutivos
+            \+ (UltimoModo == 'CAMINANDO', LineaTramo == 'CAMINANDO'),
+            % 3. Prohibir bajarse de una línea para caminar y volver a subir a la misma línea
+            \+ (UltimoModo == 'CAMINANDO', LineaTramo == UltimaLineaReal),
+            % 4. Control de presupuesto máximo de caminata acumulada en todo el viaje (650m)
+            (   LineaTramo == 'CAMINANDO'
+            ->  NuevaDistCam is DistCam + D,
+                NuevaDistCam =< 650.0
+            ;   NuevaDistCam = DistCam
+            ),
+            % 5. Cálculo exacto de transbordos reales entre líneas de colectivo
+            actualizar_lineas_y_transbordos(
+                LineaTramo, UltimaLineaReal, UltimoModo, Lineas, Transbordos,
+                NuevaUltimaLineaReal, NuevasLineas, NuevosTrans
             ),
             NuevaDist is Dist + D,
             NuevoTiempoViaje is TiempoViaje + T,
-            NuevoTiempoTotal is NuevoTiempoViaje + (NuevosTrans * 8.0)
+            NuevoTiempoTotal is NuevoTiempoViaje + (NuevosTrans * 8.0),
+            heuristica_tiempo(Siguiente, Destino, H),
+            FScore is NuevoTiempoTotal + H
         ),
         Vecinos
     ).
 
-agregar_a_heap([], Heap, Heap).
-agregar_a_heap([Costo-Estado|Resto], Heap0, HeapFinal) :-
-    add_to_heap(Heap0, Costo, Estado, Heap1),
-    agregar_a_heap(Resto, Heap1, HeapFinal).
-
-% Agrupa tramos consecutivos de la misma línea en etapas de viaje
-agrupar_en_etapas([], []).
-agrupar_en_etapas([tramo(L, Orig, Dest, D, T)|Resto], Etapas) :-
-    agrupar_etapas_aux(Resto, L, Orig, Dest, 1, D, T, Etapas).
-
-agrupar_etapas_aux([tramo(L, _, SigDest, D, T)|Resto], L, Orig, _, Cant, DistAcc, TAcc, Etapas) :-
+% Caso A: Tramo peatonal ('CAMINANDO') -> No suma transbordo ni borra el último colectivo tomado
+actualizar_lineas_y_transbordos('CAMINANDO', UltimaLineaReal, _, Lineas, Transbordos, UltimaLineaReal, NuevasLineas, Transbordos) :-
     !,
-    NuevaCant is Cant + 1,
+    append(Lineas, ['CAMINANDO'], NuevasLineas).
+
+% Caso B: Primer colectivo del viaje (aunque haya caminado al inicio)
+actualizar_lineas_y_transbordos(LineaBus, none, _, Lineas, Transbordos, LineaBus, NuevasLineas, Transbordos) :-
+    !,
+    append(Lineas, [LineaBus], NuevasLineas).
+
+% Caso C: Continúa en la misma línea de colectivo sin haberse bajado
+actualizar_lineas_y_transbordos(LineaBus, LineaBus, LineaBus, Lineas, Transbordos, LineaBus, Lineas, Transbordos) :-
+    !.
+
+% Caso D: Cambio real de línea de colectivo (en la misma parada o tras caminar a otra parada)
+actualizar_lineas_y_transbordos(LineaBus, UltimaLineaReal, _, Lineas, Transbordos, LineaBus, NuevasLineas, NuevosTrans) :-
+    LineaBus \== UltimaLineaReal,
+    NuevosTrans is Transbordos + 1,
+    append(Lineas, [LineaBus], NuevasLineas).
+
+agregar_lista_a_heap([], Heap, Heap).
+agregar_lista_a_heap([Prioridad-Estado|Resto], HeapIn, HeapOut) :-
+    add_to_heap(HeapIn, Prioridad, Estado, HeapMid),
+    agregar_lista_a_heap(Resto, HeapMid, HeapOut).
+% ==================================================================
+% 3. PUENTE DE SERIALIZACIÓN JSON PARA PYTHON (FFI DE CERO PARSING)
+% ==================================================================
+
+buscar_rutas_json(Origen, Destino, MaxRutas, JsonAtom) :-
+    buscar_rutas_optimas(Origen, Destino, MaxRutas, Rutas),
+    maplist(ruta_a_dict, Rutas, DictsRutas),
+    atom_json_dict(JsonAtom, DictsRutas, [as(atom)]).
+
+ruta_a_dict(
+    ruta(TiempoTotal, TiempoViaje, Transbordos, Dist, Lineas, Paradas, Tramos),
+    json{
+        tiempo_total: TTotalRed,
+        tiempo_viaje: TViajeRed,
+        tiempo_espera: TEsperaRed,
+        distancia: DistRed,
+        transbordos: Transbordos,
+        lineas: Lineas,
+        paradas: Paradas,
+        etapas: EtapasDicts
+    }
+) :-
+    TTotalRed is round(TiempoTotal * 10) / 10,
+    TViajeRed is round(TiempoViaje * 10) / 10,
+    TEspera is TiempoTotal - TiempoViaje,
+    TEsperaRed is round(TEspera * 10) / 10,
+    DistRed is round(Dist * 10) / 10,
+    agrupar_etapas(Tramos, EtapasDicts).
+
+agrupar_etapas([], []).
+agrupar_etapas([tramo(Linea, Orig, Dest, D, T)|Resto], [EtapaDict|OtrasEtapas]) :-
+    consumir_misma_linea(Resto, Linea, Dest, DestFinal, 1, CantParadas, D, DistAcum, T, TiempoAcum, RestoSinLinea),
+    DistRed is round(DistAcum * 10) / 10,
+    TiempoRed is round(TiempoAcum * 10) / 10,
+    EtapaDict = json{
+        linea: Linea,
+        origen: Orig,
+        destino: DestFinal,
+        paradas_intermedias: CantParadas,
+        distancia: DistRed,
+        tiempo: TiempoRed
+    },
+    agrupar_etapas(RestoSinLinea, OtrasEtapas).
+
+consumir_misma_linea([tramo(Linea, _, SigDest, D, T)|Resto], Linea, _, DestFinal, CantAcc, CantFinal, DistAcc, DistFinal, TiempoAcc, TiempoFinal, RestoFinal) :-
+    !,
+    NuevaCant is CantAcc + 1,
     NuevaDist is DistAcc + D,
-    NuevoT is TAcc + T,
-    agrupar_etapas_aux(Resto, L, Orig, SigDest, NuevaCant, NuevaDist, NuevoT, Etapas).
+    NuevoTiempo is TiempoAcc + T,
+    consumir_misma_linea(Resto, Linea, SigDest, DestFinal, NuevaCant, CantFinal, NuevaDist, DistFinal, NuevoTiempo, TiempoFinal, RestoFinal).
 
-agrupar_etapas_aux([tramo(NuevaL, NuevaOrig, SigDest, D, T)|Resto], L, Orig, Dest, Cant, DistAcc, TAcc, [etapa(L, Orig, Dest, Cant, DistAcc, TAcc)|OtrasEtapas]) :-
-    agrupar_etapas_aux(Resto, NuevaL, NuevaOrig, SigDest, 1, D, T, OtrasEtapas).
-
-agrupar_etapas_aux([], L, Orig, Dest, Cant, DistAcc, TAcc, [etapa(L, Orig, Dest, Cant, DistAcc, TAcc)]).
-
-% Predicados amigables para consultar desde Python con PySwip
-buscar_ruta(Origen, Destino, TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas, Etapas) :-
-    buscar_rutas_optimas(Origen, Destino, 5, Rutas),
-    member(ruta(TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas, Tramos), Rutas),
-    agrupar_en_etapas(Tramos, Etapas).
-
-buscar_ruta(Origen, Destino, TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas) :-
-    buscar_ruta(Origen, Destino, TiempoTotal, TiempoViaje, Transbordos, DistTotal, Lineas, Paradas, _).
+consumir_misma_linea(Resto, _, DestActual, DestActual, Cant, Cant, Dist, Dist, Tiempo, Tiempo, Resto).

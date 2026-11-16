@@ -1,30 +1,35 @@
 package com.example.bondibariloche.data
 
-/**
- * Modelos de datos: son el espejo en Kotlin de los modelos Pydantic de api.py
- * (ParadaDetalle, EtapaDetalle, TransbordoDetalle y RutaRespuesta).
- */
 
+/**
+ * Modelos de datos: espejo en Kotlin de los modelos Pydantic de api_2.py.
+ */
 data class Parada(
-    val id: String,          // ej. "p_9"
-    val nombre: String,      // ej. "SAN MARTIN - INDEPENDENCIA"
+    val id: String,
+    val nombre: String,
     val latitud: Double,
     val longitud: Double
 )
 
-/** Un tramo del viaje sobre UNA sola línea (entre dos transbordos). */
+/** Un tramo del viaje (colectivo o caminata) entre dos puntos. */
 data class Etapa(
     val linea: String,
     val origen: Parada,
     val destino: Parada,
-    val paradasIntermedias: Int,   // cantidad de paradas que se viajan en la etapa
-    val distancia: Double,         // metros
-    val tiempo: Double             // minutos
-)
+    val paradasIntermedias: Int,
+    val distancia: Double,
+    val tiempo: Double
+) {
+    val esCaminata: Boolean
+        get() = linea.equals("CAMINANDO", ignoreCase = true)
+}
 
-/** Dónde hay que bajar y a qué línea subir. */
+/** Detalle de combinación entre colectivos (directa o con caminata intermedia). */
 data class Transbordo(
     val parada: Parada,
+    val paradaSubida: Parada? = null,
+    val requiereCaminata: Boolean = false,
+    val metrosCaminata: Double = 0.0,
     val bajarDe: String,
     val subirA: String,
     val instruccion: String
@@ -32,27 +37,44 @@ data class Transbordo(
 
 /** Una alternativa de recorrido completa. */
 data class Ruta(
-    val tiempoTotal: Double,       // minutos (viaje + espera por transbordos)
+    val esRutaExacta: Boolean = true,
+    val distanciaCaminataFinal: Double = 0.0,
+    val mensajeUsuario: String? = null,
+    val tiempoTotal: Double,
     val tiempoViaje: Double,
     val tiempoEspera: Double,
-    val distancia: Double,         // metros
+    val distancia: Double,
     val transbordos: Int,
     val lineas: List<String>,
     val etapas: List<Etapa>,
     val transbordosDetalle: List<Transbordo>,
-    val paradas: List<Parada>      // TODAS las paradas del recorrido, en orden
+    val paradas: List<Parada>
 ) {
+    val lineasColectivo: List<String>
+        get() = lineas.filter { !it.equals("CAMINANDO", ignoreCase = true) }
+
+    val tieneCaminata: Boolean
+        get() = etapas.any { it.esCaminata }
+
     /**
-     * Paradas que recorre una etapa, en orden (incluye origen y destino de la etapa).
-     * Sirve para dibujar un tramo de color por línea sobre el mapa.
-     *
-     * Funciona porque la ruta nunca repite paradas, así que el origen y el destino
-     * de cada etapa aparecen una sola vez dentro de [paradas].
+     * Extrae la sublista ordenada de paradas que componen una etapa.
+     * Maneja correctamente etapas consecutivas buscando desde el índice previo.
      */
-    fun paradasDeEtapa(etapa: Etapa): List<Parada> {
-        val desde = paradas.indexOfFirst { it.id == etapa.origen.id }
-        val hasta = paradas.indexOfFirst { it.id == etapa.destino.id }
-        return if (desde in 0..hasta) paradas.subList(desde, hasta + 1)
-        else listOf(etapa.origen, etapa.destino)   // plan B: línea recta
+    fun paradasDeEtapa(etapa: Etapa, indiceInicioBusqueda: Int = 0): List<Parada> {
+        val desde = paradas.drop(indiceInicioBusqueda)
+            .indexOfFirst { it.id == etapa.origen.id }
+            .let { if (it >= 0) it + indiceInicioBusqueda else -1 }
+
+        val hasta = if (desde >= 0) {
+            paradas.drop(desde)
+                .indexOfFirst { it.id == etapa.destino.id }
+                .let { if (it >= 0) it + desde else -1 }
+        } else -1
+
+        return if (desde in 0..hasta) {
+            paradas.subList(desde, hasta + 1)
+        } else {
+            listOf(etapa.origen, etapa.destino)
+        }
     }
 }

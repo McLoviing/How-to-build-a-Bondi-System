@@ -98,58 +98,97 @@ def seleccionar_parada(paradas: list, mensaje: str):
     return seleccionada
 
 
-def mostrar_ruta(ruta: dict, dict_paradas: dict, indice: int):
-    """
-    Imprime de forma ordenada y comprensible los detalles de una ruta recomendada.
-    """
-    lineas = ruta.get("lineas", [])
-    lineas_str = " -> ".join(f"Línea {l}" for l in lineas) if lineas else "Misma parada"
-    tipo = "Directo (sin transbordo)" if ruta["transbordos"] == 0 else f"{ruta['transbordos']} transbordo(s)"
+def _formatear_nombre_parada(parada_id: str, dict_paradas: dict) -> str:
+    """Devuelve 'CALLE - REFERENCIA (p_id)' de forma segura."""
+    info = dict_paradas.get(parada_id)
+    if not info:
+        return f"Parada desconocida ({parada_id})"
+    return f"{info['nombre']} ({parada_id})"
 
-    print(f"\n==================================================================")
-    print(f" OPCIÓN {indice}: {lineas_str} [{tipo}]")
-    print(f"==================================================================")
-    print(f" • Tiempo total estimado: {ruta['tiempo_total']:.1f} min")
-    print(f"   - Tiempo en viaje: {ruta['tiempo_viaje']:.1f} min")
-    if ruta["transbordos"] > 0:
-        print(f"   - Tiempo estimado de espera por transbordo: {ruta['tiempo_espera']:.1f} min")
-    print(f" • Distancia total: {ruta['distancia'] / 1000:.2f} km ({ruta['distancia']:.0f} metros)")
-    print(f" • Total de transbordos: {ruta['transbordos']}")
-    print(f" • Cantidad de paradas del recorrido: {len(ruta['paradas'])}")
-    print(f"\n Itinerario:")
 
-    paradas = ruta["paradas"]
-    if len(paradas) <= 1:
-        print("   Origen y destino coinciden.")
+def _es_caminata(etapa: dict) -> bool:
+    return str(etapa.get("linea", "")).upper() == "CAMINANDO"
+
+
+def mostrar_ruta(ruta: dict, dict_paradas: dict, indice: int) -> None:
+    """
+    Renderiza en consola una ruta multimodal (Colectivo + Caminata) con lenguaje
+    natural claro, diferenciando transbordos en parada, transbordos a pie y tramo final.
+    """
+    tiempo_total = ruta["tiempo_total"]
+    tiempo_viaje = ruta["tiempo_viaje"]
+    tiempo_espera = ruta.get("tiempo_espera", round(tiempo_total - tiempo_viaje, 1))
+    distancia_m = int(round(ruta["distancia"]))
+    distancia_km = distancia_m / 1000.0
+    transbordos = ruta["transbordos"]
+    etapas = ruta.get("etapas", [])
+    paradas = ruta.get("paradas", [])
+
+    # Resumen de líneas reales (excluir 'CAMINANDO' de la cabecera de líneas)
+    lineas_bus = [l for l in ruta.get("lineas", []) if str(l).upper() != "CAMINANDO"]
+    resumen_lineas = " -> ".join(f"Línea {l}" for l in lineas_bus) if lineas_bus else "Solo caminata"
+
+    print("\n" + "=" * 68)
+    print(f" OPCIÓN #{indice}: {resumen_lineas}")
+    print("=" * 68)
+    print(f" • Tiempo total estimado: {tiempo_total:.1f} min")
+    print(f"   - Tiempo de desplazamiento (bus/pie): {tiempo_viaje:.1f} min")
+    if tiempo_espera > 0:
+        print(f"   - Tiempo estimado de espera por transbordo: {tiempo_espera:.1f} min")
+    print(f" • Distancia total: {distancia_km:.2f} km ({distancia_m} metros)")
+    print(f" • Total de transbordos: {transbordos}")
+    print(f" • Cantidad de paradas del recorrido: {len(paradas)}")
+
+    if not etapas:
         return
 
-    orig_id = paradas[0]
-    dest_id = paradas[-1]
-    nom_orig = dict_paradas.get(orig_id, {}).get("nombre", orig_id)
-    nom_dest = dict_paradas.get(dest_id, {}).get("nombre", dest_id)
+    print("\n Itinerario paso a paso:")
+    total_etapas = len(etapas)
 
-    etapas = ruta.get("etapas", [])
-    if etapas:
-        for i, etapa in enumerate(etapas, 1):
-            nom_o = dict_paradas.get(etapa["origen"], {}).get("nombre", etapa["origen"])
-            nom_d = dict_paradas.get(etapa["destino"], {}).get("nombre", etapa["destino"])
+    for idx, etapa in enumerate(etapas):
+        paso = idx + 1
+        orig_txt = _formatear_nombre_parada(etapa["origen"], dict_paradas)
+        dest_txt = _formatear_nombre_parada(etapa["destino"], dict_paradas)
+        dist_etapa = int(round(etapa["distancia"]))
+        tiempo_etapa = etapa["tiempo"]
+        es_ultima = (idx == total_etapas - 1)
+        siguiente_etapa = etapas[idx + 1] if not es_ultima else None
 
-            print(f"   {i}. Tomar Línea {etapa['linea']} en parada: {nom_o} ({etapa['origen']})")
-            print(f"      Viajar {etapa['paradas_intermedias']} parada(s) (~{etapa['tiempo']:.1f} min, {etapa['distancia']:.0f} m)")
-
-            if i < len(etapas):
-                prox_linea = etapas[i]["linea"]
-                print(f"      Bajar en parada de combinación: {nom_d} ({etapa['destino']})")
-                print(f"\n      >>> TRANSBORDO:")
-                print(f"      >>> Descender del colectivo en: {nom_d} ({etapa['destino']})")
-                print(f"      >>> Esperar y abordar la Línea {prox_linea} [Espera aprox: {ESPERA_POR_TRANSBORDO:.0f} min]\n")
+        if _es_caminata(etapa):
+            # --- RENDERIZADO DE TRAMO PEATONAL ---
+            if es_ultima:
+                print(f"\n   {paso}. [A PIE] Caminar hasta destino final:")
+                print(f"      Desde: {orig_txt}")
+                print(f"      Hasta: {dest_txt} ({dist_etapa} m, ~{tiempo_etapa:.1f} min)")
+            elif idx == 0:
+                sig_linea = siguiente_etapa["linea"]
+                print(f"\n   {paso}. [A PIE] Caminar hacia parada de inicio:")
+                print(f"      Desde: {orig_txt}")
+                print(f"      Hasta: {dest_txt} ({dist_etapa} m, ~{tiempo_etapa:.1f} min) para abordar Línea {sig_linea}")
             else:
-                print(f"      Bajar en destino final: {nom_d} ({etapa['destino']})")
-    else:
-        # Fallback si no viniesen etapas estructuradas
-        orig_id = paradas[0]
-        dest_id = paradas[-1]
-        nom_orig = dict_paradas.get(orig_id, {}).get("nombre", orig_id)
-        nom_dest = dict_paradas.get(dest_id, {}).get("nombre", dest_id)
-        print(f"   1. Viajar desde {nom_orig} ({orig_id}) hasta {nom_dest} ({dest_id}) en Líneas: {lineas_str}")
+                sig_linea = siguiente_etapa["linea"]
+                print(f"\n   {paso}. [A PIE] Caminar para combinar de línea:")
+                print(f"      Desde: {orig_txt}")
+                print(f"      Hasta: {dest_txt} ({dist_etapa} m, ~{tiempo_etapa:.1f} min)")
+                print(f"\n      >>> COMBINACIÓN:")
+                print(f"      >>> Esperar y abordar la Línea {sig_linea} en {dest_txt} [Espera aprox: 8.0 min]")
+        else:
+            # --- RENDERIZADO DE TRAMO EN COLECTIVO ---
+            linea = etapa["linea"]
+            cant_paradas = etapa["paradas_intermedias"]
 
+            print(f"\n   {paso}. [COLECTIVO] Tomar Línea {linea} en: {orig_txt}")
+            print(f"      Viajar {cant_paradas} parada(s) (~{tiempo_etapa:.1f} min, {dist_etapa} m)")
+
+            if es_ultima:
+                print(f"      Descender en destino final: {dest_txt}")
+            elif _es_caminata(siguiente_etapa):
+                # El tramo siguiente es a pie: el bloque siguiente explicará la caminata
+                print(f"      Descender en: {dest_txt} para continuar a pie")
+            else:
+                # Transbordo directo en la misma parada física entre dos colectivos
+                sig_linea = siguiente_etapa["linea"]
+                print(f"      Descender en parada de combinación: {dest_txt}")
+                print(f"\n      >>> TRANSBORDO EN PARADA:")
+                print(f"      >>> Permanecer en {dest_txt}")
+                print(f"      >>> Esperar y abordar la Línea {sig_linea} [Espera aprox: 8.0 min]")
