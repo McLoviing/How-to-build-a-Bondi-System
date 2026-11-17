@@ -31,6 +31,7 @@ fun GestionLineas(token: String, paradas: List<ParadaAdmin>, volver: () -> Unit)
     var editado by remember { mutableStateOf<TramoAdmin?>(null) }
     var confirmar by remember { mutableStateOf<(() -> Unit)?>(null) }
     var filtro by remember { mutableStateOf("") }
+    var verMapa by remember { mutableStateOf(false) }
     val nombres = remember(paradas) { paradas.associate { it.id to "${it.calle} - ${it.referencia}" } }
 
     fun ejecutar(accion: suspend () -> Unit) {
@@ -74,6 +75,7 @@ fun GestionLineas(token: String, paradas: List<ParadaAdmin>, volver: () -> Unit)
             } else {
                 Text("${tramos.size} tramos dirigidos. El sentido inverso se administra por separado.")
                 Button(onClick = { editado = null; dialogoTramo = true }, enabled = !ocupado) { Text("Agregar tramo") }
+                OutlinedButton(onClick = { verMapa = true }, enabled = tramos.isNotEmpty() && !ocupado) { Text("Ver recorrido en el mapa") }
                 OutlinedTextField(filtro, { filtro = it }, label = { Text("Buscar parada o ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(tramos.filter { "${it.origen} ${it.destino} ${nombres[it.origen]} ${nombres[it.destino]}".contains(filtro, true) }) { t ->
@@ -93,6 +95,7 @@ fun GestionLineas(token: String, paradas: List<ParadaAdmin>, volver: () -> Unit)
             }
         }
     }
+    if (verMapa && seleccion != null) DialogRecorridoAdmin(seleccion, paradas, tramos) { verMapa = false }
     if (dialogoLinea) AlertDialog(onDismissRequest = { dialogoLinea = false }, title = { Text(if (anterior == null) "Agregar línea" else "Editar línea") }, text = {
         OutlinedTextField(numero, { numero = it }, label = { Text("Número") }, singleLine = true)
     }, confirmButton = { TextButton(enabled = numero.matches(Regex("[0-9]{1,4}[A-Za-z]?")), onClick = {
@@ -127,6 +130,13 @@ private fun EditorTramo(t: TramoAdmin?, paradas: List<ParadaAdmin>, cerrar: () -
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SelectorParadaAdmin("Origen", origen, paradas, t == null) { origen = it }
             SelectorParadaAdmin("Destino", destino, paradas, t == null) { destino = it }
+            if (origen != destino && paradas.any { it.id == origen } && paradas.any { it.id == destino }) {
+                OutlinedButton(onClick = {
+                    val a = paradas.first { it.id == origen }
+                    val b = paradas.first { it.id == destino }
+                    metros = kotlin.math.round(distanciaAdmin(a, b)).toLong().toString()
+                }) { Text("Estimar distancia en línea recta") }
+            }
             OutlinedTextField(metros, { metros = it }, label = { Text("Distancia (metros)") }, singleLine = true)
             OutlinedTextField(minutos, { minutos = it }, label = { Text("Tiempo (minutos)") }, singleLine = true)
             Text("Solo se modifica el sentido origen → destino.")

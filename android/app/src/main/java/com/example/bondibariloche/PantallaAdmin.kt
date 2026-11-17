@@ -21,6 +21,7 @@ fun GestionParadas(volver: () -> Unit) {
     val alcance = rememberCoroutineScope()
     var token by remember { mutableStateOf("") }
     var verLineas by remember { mutableStateOf(false) }
+    var verParadas by remember { mutableStateOf(false) }
     var conectado by remember { mutableStateOf(false) }
     var ocupado by remember { mutableStateOf(false) }
     var mensaje by remember { mutableStateOf("") }
@@ -58,7 +59,7 @@ fun GestionParadas(volver: () -> Unit) {
         return
     }
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        TextButton(onClick = volver, enabled = !ocupado) { Text("← Volver") }
+        TextButton(onClick = { if (verParadas) verParadas = false else volver() }, enabled = !ocupado) { Text("← Volver") }
         Text("Modo Administrador", style = MaterialTheme.typography.headlineMedium)
         if (!conectado) {
             Text("Ingresá la clave configurada en el servidor.")
@@ -67,8 +68,11 @@ fun GestionParadas(volver: () -> Unit) {
                 visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             Button(onClick = { ejecutar { paradas = AdminApi.listar(token); conectado = true } },
                 enabled = !ocupado && token.isNotBlank()) { Text("Ingresar") }
-        } else {
+        } else if (!verParadas) {
+            Text("Gestión del transporte público")
+            Button(onClick = { verParadas = true }, enabled = !ocupado, modifier = Modifier.fillMaxWidth()) { Text("Gestionar paradas · ${paradas.size}") }
             Button(onClick = { verLineas = true }, enabled = !ocupado, modifier = Modifier.fillMaxWidth()) { Text("Gestionar líneas y recorridos") }
+        } else {
             Text("${paradas.size} paradas registradas")
             OutlinedTextField(value = filtro, onValueChange = { filtro = it }, singleLine = true,
                 label = { Text("Buscar por calle, referencia o ID") }, modifier = Modifier.fillMaxWidth())
@@ -79,7 +83,7 @@ fun GestionParadas(volver: () -> Unit) {
         }
         if (ocupado) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (mensaje.isNotEmpty()) Text(mensaje, color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-        if (conectado) {
+        if (conectado && verParadas) {
             val visibles = paradas.filter { "${it.id} ${it.calle} ${it.referencia}".contains(filtro.trim(), ignoreCase = true) }
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(visibles, key = { it.id }) { p ->
@@ -127,6 +131,13 @@ private fun FormularioParada(p: ParadaAdmin?, cerrar: () -> Unit,
     var referencia by remember { mutableStateOf(p?.referencia ?: "") }
     var latitud by remember { mutableStateOf(p?.latitud?.toString() ?: "") }
     var longitud by remember { mutableStateOf(p?.longitud?.toString() ?: "") }
+    var elegirMapa by remember { mutableStateOf(false) }
+    if (elegirMapa) {
+        DialogMapaAdmin(latitud.toDoubleOrNull(), longitud.toDoubleOrNull(), cerrar = { elegirMapa = false }) { a, b ->
+            latitud = a.toString(); longitud = b.toString(); elegirMapa = false
+        }
+        return
+    }
     val lat = latitud.replace(',', '.').toDoubleOrNull()
     val lon = longitud.replace(',', '.').toDoubleOrNull()
     val valido = calle.isNotBlank() && lat != null && lon != null && lat in -90.0..90.0 && lon in -180.0..180.0
@@ -138,6 +149,7 @@ private fun FormularioParada(p: ParadaAdmin?, cerrar: () -> Unit,
                 OutlinedTextField(referencia, { referencia = it }, label = { Text("Referencia") }, singleLine = true)
                 OutlinedTextField(latitud, { latitud = it }, label = { Text("Latitud") }, enabled = p?.vinculada != true, singleLine = true)
                 OutlinedTextField(longitud, { longitud = it }, label = { Text("Longitud") }, enabled = p?.vinculada != true, singleLine = true)
+                if (p?.vinculada != true) OutlinedButton(onClick = { elegirMapa = true }) { Text("Elegir ubicación en el mapa") }
                 if (p?.vinculada == true) Text("Las coordenadas de paradas vinculadas están protegidas para conservar los tramos.")
             }
         },

@@ -49,8 +49,10 @@ class MainActivity : ComponentActivity() {
         MapLibre.getInstance(this)
 
         setContent {
-            BondiBarilocheTheme {
-                AplicacionBondi()
+            BondiBarilocheTheme(darkTheme = true, dynamicColor = false) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    AplicacionBondi()
+                }
             }
         }
     }
