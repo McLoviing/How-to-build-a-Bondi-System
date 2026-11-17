@@ -11,12 +11,13 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import androidx.core.content.edit
 
 object ApiConfig {
     private const val PREFS_NAME = "bondi_api_prefs"
     private const val CLAVE_URL = "api_base_url"
 
-    var baseUrl: String = "http://10.0.2.2:8000"
+    var baseUrl: String = "http://192.168.1.2:8000"
         private set
 
     fun inicializar(contexto: Context) {
@@ -39,9 +40,9 @@ object ApiConfig {
         }
         baseUrl = limpia
         contexto.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(CLAVE_URL, limpia)
-            .apply()
+            .edit {
+                putString(CLAVE_URL, limpia)
+            }
     }
 
     private fun esEmulador(): Boolean {

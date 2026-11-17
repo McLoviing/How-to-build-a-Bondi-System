@@ -1,11 +1,6 @@
 """
 Servicio de comunicación y consultas con el motor de Prolog (SWI-Prolog / PySwip).
-Implementa:
-- Inyección automática de DLLs de SWI-Prolog en Windows.
-- Exclusión mutua (RLock) para seguridad multihilo en FastAPI.
-- Inicialización topológica automática (deduplicación + Spatial Hash peatonal).
-- Validación Fail-Fast de predicados y sanitización estricta anti-inyección.
-- Puente JSON nativo (buscar_rutas_json/4) de cero-parsing.
+Usa el puente JSON nativo (buscar_rutas_json/4) para cero-parsing en la frontera C-Python.
 """
 import json
 import logging
@@ -14,7 +9,7 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 # Garantizar resolución de libswipl.dll en Windows antes de importar pyswip
 if sys.platform == "win32":
@@ -25,11 +20,12 @@ if sys.platform == "win32":
             os.add_dll_directory(str(_ruta_swipl_bin))
 
 from pyswip import Prolog
-from config import ARCHIVO_PROLOG, CANTIDAD_ALTERNATIVAS
+from config import CANTIDAD_ALTERNATIVAS
+from resguardo_admin import obtener_archivo_trabajo
 
 logger = logging.getLogger(__name__)
 
-# Candado reentrante para proteger la frontera C-Python de PySwip frente a peticiones concurrentes
+# Candado reentrante compartido con admin_paradas.py y api.py para serializar acceso a PySwip
 _PROLOG_LOCK = threading.RLock()
 
 _PATRON_ATOMO_SEGURO = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -37,14 +33,12 @@ _PATRON_NATURAL_SORT = re.compile(r"(\d+)")
 
 
 def _validar_atomo_prolog(atomo: str) -> str:
-    """Sanitiza identificadores para impedir inyección de código en SWI-Prolog."""
     if not isinstance(atomo, str) or not _PATRON_ATOMO_SEGURO.match(atomo):
-        raise ValueError(f"Identificador inválido o inseguro para Prolog: '{atomo}'")
+        raise ValueError(f"Identificador inválido para Prolog: '{atomo}'")
     return atomo
 
 
 def _clave_orden_natural(texto: str) -> list:
-    """Ordenamiento natural homogéneo para líneas mixtas ('2', '10', '51A')."""
     partes = _PATRON_NATURAL_SORT.split(texto.lower())
     return [
         (0, int(parte)) if parte.isdigit() else (1, parte)
@@ -52,54 +46,73 @@ def _clave_orden_natural(texto: str) -> list:
     ]
 
 
-def _verificar_contrato_prolog(prolog: Prolog, ruta_archivo: Path) -> None:
-    """Patrón Fail-Fast: verifica que base.pl exponga todos los predicados requeridos."""
-    predicados_requeridos = [
-        "inicializar_grafo/0",
+def _ejecutar_once(prolog: Prolog, objetivo: str) -> bool:
+    """
+    Evalúa un objetivo Prolog (sin punto final) y cierra su cursor en C
+    de forma garantizada (patrón RAII sobre PL_open_query / PL_close_query).
+    """
+    q = prolog.query(objetivo)
+    try:
+        return next(q, None) is not None
+    finally:
+        q.close()
+
+
+def _purgar_hechos_en_memoria(prolog: Prolog) -> None:
+    """
+    Elimina cláusulas previas (tanto de archivo como assertz dinámicos) en la VM global
+    de SWI-Prolog y restaura explícitamente su atributo dynamic/1 tras abolish/1.
+    """
+    predicados_datos = [
         "linea/1",
         "parada/5",
         "tramo/5",
-        "buscar_rutas_json/4"
+        "pasa_por/2",
     ]
-    for pred in predicados_requeridos:
-        q = prolog.query(f"current_predicate({pred})")
-        try:
-            if next(q, None) is None:
-                raise RuntimeError(
-                    f"Contrato roto con Prolog: falta el predicado '{pred}' en {ruta_archivo}"
-                )
-        finally:
-            q.close()
+    for spec in predicados_datos:
+        _ejecutar_once(prolog, f"ignore(abolish({spec}))")
+        _ejecutar_once(prolog, f"dynamic({spec})")
 
 
-def cargar_prolog(ruta_archivo: Path = ARCHIVO_PROLOG) -> Prolog:
+def cargar_prolog(ruta_archivo: Optional[Path] = None) -> Prolog:
     """
-    Carga la base de conocimiento, verifica contratos, deduplica tramos
-    y precalcula los transbordos peatonales mediante indexación espacial O(V).
+    Carga overlay_admin.pl (o base.pl), purga estado residual en memoria, ejecuta
+    la inicialización topológica del grafo y valida los arcos peatonales.
     """
-    ruta_resuelta = ruta_archivo.resolve()
+    ruta_resuelta = (ruta_archivo or obtener_archivo_trabajo()).resolve()
     if not ruta_resuelta.is_file():
         raise FileNotFoundError(f"No se encontró la base de conocimiento Prolog en: {ruta_resuelta}")
 
     with _PROLOG_LOCK:
         prolog = Prolog()
+
+        # 1. Purgar hechos previos en la VM C de SWI-Prolog (garantiza rollbacks limpios)
+        _purgar_hechos_en_memoria(prolog)
+
+        # 2. Consultar archivo de trabajo actual
         prolog.consult(ruta_resuelta.as_posix())
 
-        _verificar_contrato_prolog(prolog, ruta_resuelta)
-
-        # Ejecutar inicialización topológica del grafo multimodal
-        q_init = prolog.query("inicializar_grafo.")
-        try:
-            if next(q_init, None) is None:
+        # 3. Ejecutar inicialización topológica del grafo multimodal (Fail-Fast)
+        if _ejecutar_once(prolog, "current_predicate(inicializar_grafo/0)"):
+            if not _ejecutar_once(prolog, "inicializar_grafo"):
                 raise RuntimeError("Fallo al ejecutar inicializar_grafo/0 en SWI-Prolog.")
-        finally:
-            q_init.close()
+        elif _ejecutar_once(prolog, "current_predicate(precalcular_caminatas/1)"):
+            if not _ejecutar_once(prolog, "precalcular_caminatas(300.0)"):
+                raise RuntimeError("Fallo al ejecutar precalcular_caminatas(300.0) en SWI-Prolog.")
 
-        # Confirmar que los tramos peatonales quedaron assertados en memoria
-        q_walk = prolog.query("once(tramo('CAMINANDO', _, _, _, _))")
+        # 4. Confirmar que los tramos peatonales quedaron assertados en memoria
+        q_walk = prolog.query("findall(1, tramo('CAMINANDO', _, _, _, _), L), length(L, Total)")
         try:
-            if next(q_walk, None) is None:
+            res_walk = next(q_walk, None)
+            total_caminatas = int(res_walk["Total"]) if res_walk else 0
+            if total_caminatas == 0:
                 logger.warning("Advertencia: No se generaron arcos 'CAMINANDO' en memoria.")
+            else:
+                logger.info(
+                    "Grafo Prolog cargado desde '%s' (%d arcos peatonales indexados).",
+                    ruta_resuelta.name,
+                    total_caminatas,
+                )
         finally:
             q_walk.close()
 
@@ -107,7 +120,6 @@ def cargar_prolog(ruta_archivo: Path = ARCHIVO_PROLOG) -> Prolog:
 
 
 def obtener_lineas(prolog: Prolog) -> List[str]:
-    """Obtiene todas las líneas únicas registradas en Prolog ordenadas naturalmente."""
     lineas_unicas = set()
     with _PROLOG_LOCK:
         query = prolog.query("linea(Linea)")
@@ -123,7 +135,6 @@ def obtener_lineas(prolog: Prolog) -> List[str]:
 
 
 def obtener_paradas(prolog: Prolog) -> List[Dict[str, Any]]:
-    """Extrae los hechos parada/5 deduplicados por identificador."""
     paradas: Dict[str, Dict[str, Any]] = {}
     with _PROLOG_LOCK:
         query = prolog.query("parada(Id, Calle, Referencia, Latitud, Longitud)")
@@ -141,7 +152,7 @@ def obtener_paradas(prolog: Prolog) -> List[Dict[str, Any]]:
                     "id": identificador,
                     "nombre": nombre,
                     "latitud": float(resultado["Latitud"]),
-                    "longitud": float(resultado["Longitud"])
+                    "longitud": float(resultado["Longitud"]),
                 }
         finally:
             query.close()
@@ -149,52 +160,12 @@ def obtener_paradas(prolog: Prolog) -> List[Dict[str, Any]]:
     return list(paradas.values())
 
 
-def _construir_transbordos_detalle(etapas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Analiza la secuencia de etapas para extraer combinaciones directas en parada
-    y combinaciones con caminata intermedia entre paradas cercanas.
-    """
-    detalle = []
-    for idx in range(len(etapas) - 1):
-        actual = etapas[idx]
-        siguiente = etapas[idx + 1]
-
-        if str(actual.get("linea")).upper() == "CAMINANDO":
-            continue
-
-        if str(siguiente.get("linea")).upper() != "CAMINANDO":
-            detalle.append({
-                "parada": actual["destino"],
-                "parada_subida": actual["destino"],
-                "requiere_caminata": False,
-                "metros_caminata": 0.0,
-                "bajar_de": str(actual["linea"]),
-                "subir_a": str(siguiente["linea"])
-            })
-        elif idx + 2 < len(etapas):
-            colectivo_sig = etapas[idx + 2]
-            if str(colectivo_sig.get("linea")).upper() != "CAMINANDO":
-                detalle.append({
-                    "parada": actual["destino"],
-                    "parada_subida": siguiente["destino"],
-                    "requiere_caminata": True,
-                    "metros_caminata": round(float(siguiente.get("distancia", 0.0)), 1),
-                    "bajar_de": str(actual["linea"]),
-                    "subir_a": str(colectivo_sig["linea"])
-                })
-    return detalle
-
-
 def buscar_rutas(
     prolog: Prolog,
     origen_id: str,
     destino_id: str,
-    max_rutas: int = CANTIDAD_ALTERNATIVAS
+    max_rutas: int = CANTIDAD_ALTERNATIVAS,
 ) -> List[Dict[str, Any]]:
-    """
-    Consulta las rutas óptimas multimodales a través del puente JSON de SWI-Prolog
-    bajo exclusión mutua thread-safe.
-    """
     origen_seguro = _validar_atomo_prolog(origen_id)
     destino_seguro = _validar_atomo_prolog(destino_id)
     limite = max(1, min(int(max_rutas), 15))
@@ -209,11 +180,10 @@ def buscar_rutas(
             "lineas": [],
             "paradas": [origen_seguro],
             "etapas": [],
-            "transbordos_detalle": []
+            "transbordos_detalle": [],
         }]
 
     consulta = f"buscar_rutas_json({origen_seguro}, {destino_seguro}, {limite}, JsonSalida)"
-
     with _PROLOG_LOCK:
         query = prolog.query(consulta)
         try:
@@ -223,13 +193,19 @@ def buscar_rutas(
 
             raw_json = str(resultado["JsonSalida"])
             rutas: List[Dict[str, Any]] = json.loads(raw_json)
-        except Exception as exc:
-            logger.exception(f"Fallo en consulta Prolog ({origen_seguro} -> {destino_seguro})")
-            raise RuntimeError(f"Error ejecutando motor lógico: {exc}") from exc
         finally:
             query.close()
 
+    # Reconstruir detalle de transbordos reales (ignorando transiciones peatonales)
     for ruta in rutas:
-        ruta["transbordos_detalle"] = _construir_transbordos_detalle(ruta.get("etapas", []))
+        etapas_bus = [e for e in ruta.get("etapas", []) if e.get("linea") != "CAMINANDO"]
+        transbordos_detalle = []
+        for i in range(len(etapas_bus) - 1):
+            transbordos_detalle.append({
+                "parada": etapas_bus[i]["destino"],
+                "bajar_de": etapas_bus[i]["linea"],
+                "subir_a": etapas_bus[i + 1]["linea"],
+            })
+        ruta["transbordos_detalle"] = transbordos_detalle
 
     return rutas

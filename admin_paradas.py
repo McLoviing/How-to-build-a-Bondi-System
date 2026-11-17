@@ -9,8 +9,15 @@ from pathlib import Path
 from fastapi import Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from config import ARCHIVO_PROLOG
 from servicios_prolog import _PROLOG_LOCK, obtener_paradas
+
+from resguardo_admin import (
+    autorizar_admin as _autorizar,
+    crear_snapshot_backup,
+    escribir_atomico as _escribir_atomico,
+    obtener_archivo_trabajo,
+    registrar_auditoria,
+)
 
 
 class DatosParada(BaseModel):
@@ -35,14 +42,6 @@ def serializar_prolog(funcion):
         with _PROLOG_LOCK:
             return funcion(*args, **kwargs)
     return ejecutar
-
-
-def _autorizar(token):
-    esperado = os.environ.get("BONDI_ADMIN_TOKEN", "")
-    if not esperado:
-        raise HTTPException(503, "Administración deshabilitada: configurar BONDI_ADMIN_TOKEN")
-    if not token or not hmac.compare_digest(token.encode(), esperado.encode()):
-        raise HTTPException(403, "Clave de administrador incorrecta")
 
 
 def _consultar(prolog, consulta):
@@ -85,25 +84,10 @@ def _reemplazar_hecho(texto, identificador, hecho, existe):
     return texto[:primera.start()] + hecho + ".\n" + texto[primera.start():]
 
 
-def _escribir_atomico(ruta, contenido):
-    with tempfile.NamedTemporaryFile(dir=ruta.parent, delete=False) as temporal:
-        nombre = Path(temporal.name)
-        try:
-            temporal.write(contenido)
-            temporal.flush()
-            os.fsync(temporal.fileno())
-        except Exception:
-            temporal.close()
-            nombre.unlink(missing_ok=True)
-            raise
-    try:
-        os.replace(nombre, ruta)
-    finally:
-        nombre.unlink(missing_ok=True)
-
-
 def _guardar(estado, identificador, datos, existe):
-    ruta = ARCHIVO_PROLOG.resolve()
+    ruta = obtener_archivo_trabajo().resolve()
+    accion = "eliminar_parada" if datos is None else ("editar_parada" if existe else "crear_parada")
+    crear_snapshot_backup(accion)
     original = ruta.read_bytes()
     texto = original.decode("utf-8")
     # Conservar CRLF si el archivo usa el formato de Windows.
@@ -119,7 +103,9 @@ def _guardar(estado, identificador, datos, existe):
     prolog = estado["prolog"]
     _escribir_atomico(ruta, nuevo.encode("utf-8"))
     try:
-        if not _consultar(prolog, f"transaction(({consulta}))"):
+        if _consultar(prolog, f"transaction(({consulta}))"):
+            registrar_auditoria(accion, {"parada_id": identificador})
+        else:
             raise RuntimeError("La transacción de Prolog falló")
     except Exception:
         _escribir_atomico(ruta, original)
