@@ -239,3 +239,7 @@ def consultar_rutas(
 
 
 registrar_admin(app, estado_app)
+
+# Gestión de líneas y conexiones dirigidas.
+from admin_lineas import registrar_lineas
+registrar_lineas(app, estado_app)

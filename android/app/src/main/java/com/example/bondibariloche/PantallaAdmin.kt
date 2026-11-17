@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 fun GestionParadas(volver: () -> Unit) {
     val alcance = rememberCoroutineScope()
     var token by remember { mutableStateOf("") }
+    var verLineas by remember { mutableStateOf(false) }
     var conectado by remember { mutableStateOf(false) }
     var ocupado by remember { mutableStateOf(false) }
     var mensaje by remember { mutableStateOf("") }
@@ -49,6 +50,13 @@ fun GestionParadas(volver: () -> Unit) {
         }
     }
 
+    if (verLineas) {
+        GestionLineas(token, paradas) {
+            verLineas = false
+            ejecutar { paradas = AdminApi.listar(token) }
+        }
+        return
+    }
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         TextButton(onClick = volver, enabled = !ocupado) { Text("← Volver") }
         Text("Modo Administrador", style = MaterialTheme.typography.headlineMedium)
@@ -60,6 +68,7 @@ fun GestionParadas(volver: () -> Unit) {
             Button(onClick = { ejecutar { paradas = AdminApi.listar(token); conectado = true } },
                 enabled = !ocupado && token.isNotBlank()) { Text("Ingresar") }
         } else {
+            Button(onClick = { verLineas = true }, enabled = !ocupado, modifier = Modifier.fillMaxWidth()) { Text("Gestionar líneas y recorridos") }
             Text("${paradas.size} paradas registradas")
             OutlinedTextField(value = filtro, onValueChange = { filtro = it }, singleLine = true,
                 label = { Text("Buscar por calle, referencia o ID") }, modifier = Modifier.fillMaxWidth())

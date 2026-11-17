@@ -17,7 +17,38 @@ data class ParadaAdmin(
     val vinculada: Boolean
 )
 
+data class TramoAdmin(val origen: String, val destino: String, val distancia: Double, val tiempo: Double)
+
 object AdminApi {
+    suspend fun lineas(token: String): List<String> = withContext(Dispatchers.IO) {
+        val a = JSONArray(pedir("GET", "/admin/lineas", token))
+        List(a.length()) { a.getString(it) }
+    }
+
+    suspend fun guardarLinea(token: String, anterior: String?, numero: String) = withContext(Dispatchers.IO) {
+        pedir(if (anterior == null) "POST" else "PUT", if (anterior == null) "/admin/lineas" else "/admin/lineas/$anterior", token, JSONObject().put("numero", numero))
+    }
+
+    suspend fun eliminarLinea(token: String, numero: String) = withContext(Dispatchers.IO) {
+        pedir("DELETE", "/admin/lineas/$numero", token)
+    }
+
+    suspend fun tramos(token: String, numero: String): List<TramoAdmin> = withContext(Dispatchers.IO) {
+        val a = JSONArray(pedir("GET", "/admin/lineas/$numero/tramos", token))
+        List(a.length()) { i ->
+            val t = a.getJSONObject(i)
+            TramoAdmin(t.getString("origen"), t.getString("destino"), t.getDouble("distancia"), t.getDouble("tiempo"))
+        }
+    }
+
+    suspend fun guardarTramo(token: String, numero: String, t: TramoAdmin) = withContext(Dispatchers.IO) {
+        pedir("PUT", "/admin/lineas/$numero/tramos", token, JSONObject().put("origen", t.origen).put("destino", t.destino).put("distancia", t.distancia).put("tiempo", t.tiempo))
+    }
+
+    suspend fun eliminarTramo(token: String, numero: String, t: TramoAdmin) = withContext(Dispatchers.IO) {
+        pedir("DELETE", "/admin/lineas/$numero/tramos/${t.origen}/${t.destino}", token)
+    }
+
     suspend fun listar(token: String): List<ParadaAdmin> = withContext(Dispatchers.IO) {
         val datos = JSONArray(pedir("GET", "/admin/paradas", token))
         List(datos.length()) { indice ->
