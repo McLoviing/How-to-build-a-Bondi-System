@@ -937,21 +937,7 @@ fun EtiquetaLinea(linea: String) {
 
 @Composable
 fun PantallaAdministrador(volver: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text("Modo Administrador", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-        Text("Gestión de líneas y paradas.")
-        Spacer(Modifier.height(24.dp))
-        Button(onClick = volver) {
-            Text("Volver al inicio")
-        }
-    }
+    GestionParadas(volver)
 }
 
 /** Diálogo para elegir entre estilos vectoriales MapLibre GL libres y sin API Key. */
