@@ -91,11 +91,14 @@ fun MapaMapLibre(
     ruta: Ruta?,
     onParadaTocada: (Parada) -> Unit,
     modifier: Modifier = Modifier,
-    estilo: EstiloVectorial = EstiloVectorial.LIBERTY
+    estilo: EstiloVectorial = EstiloVectorial.LIBERTY,
+    onPuntoTocado: ((Double, Double) -> Unit)? = null,
+    segmentosAdmin: List<Pair<Parada, Parada>> = emptyList()
 ) {
     val contexto = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val alTocarParada by rememberUpdatedState(onParadaTocada)
+    val alTocarPunto by rememberUpdatedState(onPuntoTocado)
 
     val paradasRef = remember { mutableStateOf(paradas) }
     paradasRef.value = paradas
@@ -140,6 +143,10 @@ fun MapaMapLibre(
                 }
 
                 map.addOnMapClickListener { puntoTocado ->
+                    alTocarPunto?.let {
+                        it(puntoTocado.latitude, puntoTocado.longitude)
+                        return@addOnMapClickListener true
+                    }
                     val listaActual = paradasRef.value
                     if (listaActual.isEmpty()) return@addOnMapClickListener false
 
@@ -205,7 +212,7 @@ fun MapaMapLibre(
         }
     }
 
-    LaunchedEffect(maplibreMapInstancia, estiloCargado, paradas, ruta) {
+    LaunchedEffect(maplibreMapInstancia, estiloCargado, paradas, ruta, segmentosAdmin) {
         val map = maplibreMapInstancia ?: return@LaunchedEffect
         if (!estiloCargado) return@LaunchedEffect
         val style = map.style ?: return@LaunchedEffect
@@ -216,7 +223,13 @@ fun MapaMapLibre(
         val srcWalk = style.getSourceAs<GeoJsonSource>(SRC_WALK)
 
         if (ruta == null) {
-            srcBus?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+            val segmentos = segmentosAdmin.map { (a, b) ->
+                Feature.fromGeometry(LineString.fromLngLats(listOf(
+                    Point.fromLngLat(a.longitud, a.latitud),
+                    Point.fromLngLat(b.longitud, b.latitud)
+                ))).apply { addStringProperty("color", "#1976D2") }
+            }
+            srcBus?.setGeoJson(FeatureCollection.fromFeatures(segmentos))
             srcWalk?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
 
             paradas.forEach { p ->
@@ -227,6 +240,18 @@ fun MapaMapLibre(
                         .snippet(p.id)
                         .icon(iconoParada)
                 )
+            }
+            if (segmentosAdmin.isNotEmpty() && paradas.size >= 2) {
+                val bounds = LatLngBounds.Builder().apply {
+                    paradas.forEach { include(LatLng(it.latitud, it.longitud)) }
+                }.build()
+                mapView.post {
+                    if (mapView.width > 0 && mapView.height > 0) {
+                        try {
+                            map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 75), 700)
+                        } catch (_: Exception) {}
+                    }
+                }
             }
             return@LaunchedEffect
         }

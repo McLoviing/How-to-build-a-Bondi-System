@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from config import CANTIDAD_ALTERNATIVAS
+from admin_paradas import registrar_admin, serializar_prolog
 from servicios_prolog import cargar_prolog, obtener_lineas, obtener_paradas, buscar_rutas
 
 
@@ -109,6 +110,7 @@ def listar_lineas():
 
 
 @app.get("/rutas", response_model=List[RutaRespuesta])
+@serializar_prolog
 def consultar_rutas(
     origen: str = Query(..., description="ID de parada origen, ej: p_18"),
     destino: str = Query(..., description="ID de parada destino, ej: p_413"),
@@ -234,3 +236,10 @@ def consultar_rutas(
         cache[clave_cache] = respuesta_formateada
 
     return respuesta_formateada
+
+
+registrar_admin(app, estado_app)
+
+# Gestión de líneas y conexiones dirigidas.
+from admin_lineas import registrar_lineas
+registrar_lineas(app, estado_app)
