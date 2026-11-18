@@ -13,11 +13,11 @@ from typing import Any, Dict, List, Optional
 
 # Garantizar resolución de libswipl.dll en Windows antes de importar pyswip
 if sys.platform == "win32":
-    _ruta_swipl_bin = Path(r"C:\Program Files\swipl\bin")
+    _ruta_swipl_bin = Path(os.environ.get("SWI_HOME_DIR") or r"C:\Program Files\swipl") / "bin"
     if _ruta_swipl_bin.is_dir():
         os.environ["PATH"] = f"{_ruta_swipl_bin};{os.environ.get('PATH', '')}"
         if hasattr(os, "add_dll_directory"):
-            os.add_dll_directory(str(_ruta_swipl_bin))
+            _swipl_dll_handle = os.add_dll_directory(str(_ruta_swipl_bin))
 
 from pyswip import Prolog
 from config import CANTIDAD_ALTERNATIVAS
