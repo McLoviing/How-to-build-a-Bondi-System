@@ -1,6 +1,7 @@
 """
 API REST de alto rendimiento con FastAPI para el Sistema de Transporte Público (Bondi).
 """
+from fastapi import Header
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Query
@@ -10,6 +11,15 @@ from pydantic import BaseModel
 from config import CANTIDAD_ALTERNATIVAS
 from admin_paradas import registrar_admin, serializar_prolog
 from servicios_prolog import cargar_prolog, obtener_lineas, obtener_paradas, buscar_rutas
+
+from resguardo_admin import (
+    ARCHIVO_OVERLAY,
+    autorizar_admin,
+    resetear_a_fabrica,
+    listar_historial_backups,
+    registrar_auditoria,
+    restaurar_snapshot,
+)
 
 
 # ======================================================================
@@ -237,6 +247,46 @@ def consultar_rutas(
 
     return respuesta_formateada
 
+@app.get("/admin/backups", tags=["Administrador"])
+@serializar_prolog
+def ver_backups(x_admin_token: str = Header(default="")):
+    autorizar_admin(x_admin_token)
+    return listar_historial_backups(limite=20)
+
+
+@app.post("/admin/rollback", tags=["Administrador"])
+@serializar_prolog
+def deshacer_cambio(
+    archivo: Optional[str] = None,
+    x_admin_token: str = Header(default="")
+):
+    autorizar_admin(x_admin_token)
+    restaurado = restaurar_snapshot(archivo)
+    _recargar_motor_completo()
+    registrar_auditoria("rollback", {"snapshot_restaurado": restaurado})
+    return {"restaurado": restaurado, "mensaje": "Estado anterior restaurado correctamente"}
+
+
+@app.post("/admin/restaurar-fabrica", tags=["Administrador"])
+@serializar_prolog
+def restaurar_base_original(x_admin_token: str = Header(default="")):
+    autorizar_admin(x_admin_token)
+    resetear_a_fabrica()
+    _recargar_motor_completo()
+    registrar_auditoria("reset_fabrica", {"base": "base.pl"})
+    return {"mensaje": "Base de conocimiento restaurada al estado original de fábrica"}
+
+
+def _recargar_motor_completo() -> None:
+    """Recarga Prolog limpio desde disco y refresca todas las cachés en RAM."""
+    nuevo_prolog = cargar_prolog()
+    lineas = obtener_lineas(nuevo_prolog)
+    paradas = obtener_paradas(nuevo_prolog)
+    estado_app["prolog"] = nuevo_prolog
+    estado_app["lineas"] = lineas
+    estado_app["paradas"] = paradas
+    estado_app["dict_paradas"] = {p["id"]: p for p in paradas}
+    estado_app["cache_rutas"].clear()
 
 registrar_admin(app, estado_app)
 

@@ -47,7 +47,7 @@ data class Ruta(
     val transbordos: Int,
     val lineas: List<String>,
     val etapas: List<Etapa>,
-    val transbordosDetalle: List<Transbordo>,
+    val transbordosDetalle: List<Transbordo> = emptyList(),
     val paradas: List<Parada>
 ) {
     val lineasColectivo: List<String>

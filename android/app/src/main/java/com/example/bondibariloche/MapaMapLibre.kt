@@ -1,187 +1,95 @@
 package com.example.bondibariloche
 
+import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import androidx.compose.foundation.layout.fillMaxSize
+import android.graphics.PointF
+import android.graphics.RectF
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.bondibariloche.data.GestorUbicacion
 import com.example.bondibariloche.data.Parada
 import com.example.bondibariloche.data.Ruta
-import org.maplibre.android.MapLibre
-import org.maplibre.android.annotations.IconFactory
-import org.maplibre.android.annotations.MarkerOptions
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
+import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.modes.CameraMode
+import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
-import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.expressions.Expression.*
+import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
-import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.PropertyFactory.*
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+import kotlin.math.max
+import kotlin.math.min
 
-enum class EstiloVectorial(val url: String, val etiqueta: String, val descripcion: String) {
-    LIBERTY(
-        "https://tiles.openfreemap.org/styles/liberty",
-        "Liberty (Recomendado)",
-        "Vectorial moderno de alta definición"
-    ),
-    POSITRON(
-        "https://tiles.openfreemap.org/styles/positron",
-        "Positron (Minimalista)",
-        "Gris claro minimalista, resalta al máximo las líneas"
-    ),
-    BRIGHT(
-        "https://tiles.openfreemap.org/styles/bright",
-        "Bright (Claro)",
-        "Cartografía limpia, luminosa y con nombres de calles nítidos"
-    )
-}
+// Estilo vectorial oscuro original de OpenFreeMap (100% gratuito y sin API key)
+private const val URL_ESTILO_MAPA_ORIGINAL = "https://tiles.openfreemap.org/styles/liberty"
 
-private const val COLOR_ORIGEN = 0xFF2E7D32.toInt()
-private const val COLOR_DESTINO = 0xFFD32F2F.toInt()
-private const val COLOR_TRANSBORDO = 0xFFF57C00.toInt()
-private const val COLOR_PARADA = 0xFF1976D2.toInt()
-private const val COLOR_SIN_ETAPAS = "#455A64"
-private const val COLOR_CAMINATA_HEX = "#EF6C00"
+private const val SRC_PARADAS = "src-paradas"
+private const val SRC_RUTA_BUS = "src-ruta-bus"
+private const val SRC_RUTA_WALK = "src-ruta-walk"
+private const val SRC_ADMIN = "src-admin"
 
-private const val SRC_BUS = "bondi-source-bus"
-private const val SRC_WALK = "bondi-source-walk"
-private const val LYR_BUS_CASING = "bondi-layer-bus-casing"
-private const val LYR_BUS = "bondi-layer-bus"
-private const val LYR_WALK_CASING = "bondi-layer-walk-casing"
-private const val LYR_WALK = "bondi-layer-walk"
+private const val LAYER_ADMIN = "layer-admin"
+private const val LAYER_RUTA_WALK = "layer-ruta-walk"
+private const val LAYER_RUTA_BUS = "layer-ruta-bus"
+private const val LAYER_PARADAS = "layer-paradas"
 
-private val PALETA_LINEAS = intArrayOf(
-    0xFF1976D2.toInt(), // Azul
-    0xFF388E3C.toInt(), // Verde
-    0xFF7B1FA2.toInt(), // Violeta
-    0xFFE65100.toInt(), // Naranja profundo
-    0xFF00796B.toInt(), // Verde azulado
-    0xFF303F9F.toInt(), // Índigo
-    0xFF5D4037.toInt(), // Marrón cálido
-    0xFFC2185B.toInt()  // Magenta
-)
-
-fun colorDeLineaVectorial(linea: String): Int =
-    PALETA_LINEAS[(linea.hashCode() and 0x7FFFFFFF) % PALETA_LINEAS.size]
-
-private fun colorHexDeLinea(linea: String): String {
-    val rgb = colorDeLineaVectorial(linea) and 0x00FFFFFF
-    return String.format("#%06X", rgb)
-}
+// Constantes geodésicas y ergonómicas calibradas para San Carlos de Bariloche
+private val CENTRO_BARILOCHE = LatLng(-41.1335, -71.3103)
+private const val ZOOM_INICIAL_BARILOCHE = 13.2
+private const val MARGEN_MINIMO_GRADOS = 0.0018 // ~200 m; previene bounds degenerados
+private const val RADIO_HIT_TEST_DP = 18f       // Área táctil ergonómica de 36x36 dp
 
 @Composable
 fun MapaMapLibre(
     paradas: List<Parada>,
     ruta: Ruta?,
-    onParadaTocada: (Parada) -> Unit,
+    onParadaClick: (Parada) -> Unit,
     modifier: Modifier = Modifier,
-    estilo: EstiloVectorial = EstiloVectorial.LIBERTY,
     onPuntoTocado: ((Double, Double) -> Unit)? = null,
     segmentosAdmin: List<Pair<Parada, Parada>> = emptyList()
 ) {
-    val contexto = LocalContext.current
+    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val alTocarParada by rememberUpdatedState(onParadaTocada)
-    val alTocarPunto by rememberUpdatedState(onPuntoTocado)
+    val density = LocalDensity.current
 
-    val paradasRef = remember { mutableStateOf(paradas) }
-    paradasRef.value = paradas
+    // Aritmética directa sobre density.density (evita ambigüedades genéricas y autoboxing en remember)
+    val hitRadiusPx: Float = remember(density) { RADIO_HIT_TEST_DP * density.density }
+    val bottomPaddingPx: Int = remember(density) { (260f * density.density).toInt() }
 
-    LaunchedEffect(Unit) {
-        MapLibre.getInstance(contexto)
-    }
+    val paradasActuales by rememberUpdatedState(paradas)
+    val rutaActual by rememberUpdatedState(ruta)
+    val segmentosActuales by rememberUpdatedState(segmentosAdmin)
+    val onParadaClickActual by rememberUpdatedState(onParadaClick)
+    val onPuntoTocadoActual by rememberUpdatedState(onPuntoTocado)
 
-    var maplibreMapInstancia by remember { mutableStateOf<MapLibreMap?>(null) }
-    var estiloCargado by remember { mutableStateOf(false) }
+    val paradasPorId = remember(paradas) { paradas.associateBy { it.id } }
+    val paradasPorIdActual by rememberUpdatedState(paradasPorId)
 
-    val iconoParada = remember(contexto) {
-        IconFactory.getInstance(contexto).fromBitmap(crearBitmapCirculo(COLOR_PARADA, 14, contexto, conBorde = true))
-    }
-    val iconoOrigen = remember(contexto) {
-        IconFactory.getInstance(contexto).fromBitmap(crearBitmapCirculo(COLOR_ORIGEN, 24, contexto, conBorde = true))
-    }
-    val iconoDestino = remember(contexto) {
-        IconFactory.getInstance(contexto).fromBitmap(crearBitmapCirculo(COLOR_DESTINO, 24, contexto, conBorde = true))
-    }
-    val iconoTransbordo = remember(contexto) {
-        IconFactory.getInstance(contexto).fromBitmap(crearBitmapCirculo(COLOR_TRANSBORDO, 20, contexto, conBorde = true))
-    }
+    var mapaInstancia by remember { mutableStateOf<MapLibreMap?>(null) }
+    var estiloListo by remember { mutableStateOf(false) }
 
-    val mapView = remember(contexto) {
-        MapLibre.getInstance(contexto)
-        MapView(contexto).apply {
-            getMapAsync { map ->
-                maplibreMapInstancia = map
-                map.cameraPosition = CameraPosition.Builder()
-                    .target(LatLng(-41.1335, -71.3103))
-                    .zoom(13.5)
-                    .build()
-
-                map.uiSettings.isCompassEnabled = true
-                map.uiSettings.isRotateGesturesEnabled = true
-                map.uiSettings.isTiltGesturesEnabled = true
-
-                map.setStyle(estilo.url) { style ->
-                    inicializarCapasRuta(style)
-                    estiloCargado = true
-                }
-
-                map.addOnMapClickListener { puntoTocado ->
-                    alTocarPunto?.let {
-                        it(puntoTocado.latitude, puntoTocado.longitude)
-                        return@addOnMapClickListener true
-                    }
-                    val listaActual = paradasRef.value
-                    if (listaActual.isEmpty()) return@addOnMapClickListener false
-
-                    var paradaCercana: Parada? = null
-                    var distanciaMinima = Double.MAX_VALUE
-                    listaActual.forEach { p ->
-                        val dist = puntoTocado.distanceTo(LatLng(p.latitud, p.longitud))
-                        if (dist < distanciaMinima) {
-                            distanciaMinima = dist
-                            paradaCercana = p
-                        }
-                    }
-
-                    val p = paradaCercana
-                    if (p != null && distanciaMinima <= 300.0) {
-                        alTocarParada(p)
-                        true
-                    } else {
-                        false
-                    }
-                }
-
-                @Suppress("DEPRECATION")
-                map.setOnMarkerClickListener { marker ->
-                    val idParada = marker.snippet
-                    if (idParada != null) {
-                        val parada = paradasRef.value.firstOrNull { it.id == idParada }
-                        if (parada != null) {
-                            alTocarParada(parada)
-                            return@setOnMarkerClickListener true
-                        }
-                    }
-                    false
-                }
-            }
+    val mapView = remember<MapView> {
+        MapView(context).apply {
+            onCreate(null)
         }
     }
 
@@ -193,247 +101,387 @@ fun MapaMapLibre(
                 Lifecycle.Event.ON_PAUSE -> mapView.onPause()
                 Lifecycle.Event.ON_STOP -> mapView.onStop()
                 Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
-                else -> {}
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            mapView.onPause()
+            mapView.onStop()
             mapView.onDestroy()
         }
     }
 
-    LaunchedEffect(estilo, maplibreMapInstancia) {
-        val map = maplibreMapInstancia ?: return@LaunchedEffect
-        estiloCargado = false
-        map.setStyle(estilo.url) { style ->
-            inicializarCapasRuta(style)
-            estiloCargado = true
-        }
+    // 1. Actualizar fuentes GeoJSON en GPU sin mover la cámara (evita zoom out errático)
+    LaunchedEffect(estiloListo, paradas, ruta, segmentosAdmin) {
+        val map = mapaInstancia ?: return@LaunchedEffect
+        val style = map.style ?: return@LaunchedEffect
+        if (!estiloListo || !style.isFullyLoaded) return@LaunchedEffect
+
+        actualizarFuentesGeoJson(
+            style = style,
+            paradas = paradas,
+            ruta = ruta,
+            segmentosAdmin = segmentosAdmin
+        )
+        activarIndicadorUbicacionNativo(context, map, style)
     }
 
-    LaunchedEffect(maplibreMapInstancia, estiloCargado, paradas, ruta, segmentosAdmin) {
-        val map = maplibreMapInstancia ?: return@LaunchedEffect
-        if (!estiloCargado) return@LaunchedEffect
-        val style = map.style ?: return@LaunchedEffect
+    // 2. Encuadrar cámara ÚNICAMENTE cuando cambia la ruta seleccionada o los segmentos activos
+    LaunchedEffect(estiloListo, ruta, segmentosAdmin) {
+        val map = mapaInstancia ?: return@LaunchedEffect
+        if (!estiloListo) return@LaunchedEffect
 
-        map.clear()
-
-        val srcBus = style.getSourceAs<GeoJsonSource>(SRC_BUS)
-        val srcWalk = style.getSourceAs<GeoJsonSource>(SRC_WALK)
-
-        if (ruta == null) {
-            val segmentos = segmentosAdmin.map { (a, b) ->
-                Feature.fromGeometry(LineString.fromLngLats(listOf(
-                    Point.fromLngLat(a.longitud, a.latitud),
-                    Point.fromLngLat(b.longitud, b.latitud)
-                ))).apply { addStringProperty("color", "#1976D2") }
+        val puntosFoco: List<LatLng> = when {
+            ruta != null && ruta.paradas.isNotEmpty() -> {
+                ruta.paradas.map { LatLng(it.latitud, it.longitud) }
             }
-            srcBus?.setGeoJson(FeatureCollection.fromFeatures(segmentos))
-            srcWalk?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-
-            paradas.forEach { p ->
-                map.addMarker(
-                    MarkerOptions()
-                        .position(LatLng(p.latitud, p.longitud))
-                        .title(p.nombre)
-                        .snippet(p.id)
-                        .icon(iconoParada)
-                )
-            }
-            if (segmentosAdmin.isNotEmpty() && paradas.size >= 2) {
-                val bounds = LatLngBounds.Builder().apply {
-                    paradas.forEach { include(LatLng(it.latitud, it.longitud)) }
-                }.build()
-                mapView.post {
-                    if (mapView.width > 0 && mapView.height > 0) {
-                        try {
-                            map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 75), 700)
-                        } catch (_: Exception) {}
-                    }
+            segmentosAdmin.isNotEmpty() -> {
+                segmentosAdmin.flatMap { (a, b) ->
+                    listOf(LatLng(a.latitud, a.longitud), LatLng(b.latitud, b.longitud))
                 }
             }
-            return@LaunchedEffect
+            else -> emptyList()
         }
 
-        // Construir features GeoJSON separadas por modo (Colectivo vs Caminata)
-        val featuresBus = mutableListOf<Feature>()
-        val featuresWalk = mutableListOf<Feature>()
-
-        if (ruta.etapas.isNotEmpty()) {
-            var cursorParadas = 0
-            ruta.etapas.forEach { etapa ->
-                val tramoParadas = ruta.paradasDeEtapa(etapa, cursorParadas)
-                if (tramoParadas.size >= 2) {
-                    cursorParadas += (tramoParadas.size - 1).coerceAtLeast(0)
-                    val coords = tramoParadas.map { Point.fromLngLat(it.longitud, it.latitud) }
-                    val feature = Feature.fromGeometry(LineString.fromLngLats(coords))
-
-                    if (etapa.esCaminata) {
-                        featuresWalk.add(feature)
-                    } else {
-                        feature.addStringProperty("color", colorHexDeLinea(etapa.linea))
-                        featuresBus.add(feature)
-                    }
-                }
-            }
-        } else if (ruta.paradas.size >= 2) {
-            val coords = ruta.paradas.map { Point.fromLngLat(it.longitud, it.latitud) }
-            val feature = Feature.fromGeometry(LineString.fromLngLats(coords)).apply {
-                addStringProperty("color", COLOR_SIN_ETAPAS)
-            }
-            featuresBus.add(feature)
-        }
-
-        srcBus?.setGeoJson(FeatureCollection.fromFeatures(featuresBus))
-        srcWalk?.setGeoJson(FeatureCollection.fromFeatures(featuresWalk))
-
-        // Marcadores de transbordo (doble marcador si hay caminata intermedia)
-        ruta.transbordosDetalle.forEach { t ->
-            if (t.requiereCaminata && t.paradaSubida != null) {
-                map.addMarker(
-                    MarkerOptions()
-                        .position(LatLng(t.parada.latitud, t.parada.longitud))
-                        .title("Bajar de Línea ${t.bajarDe} · Caminar ${t.metrosCaminata.toInt()} m")
-                        .snippet(t.parada.id)
-                        .icon(iconoTransbordo)
-                )
-                map.addMarker(
-                    MarkerOptions()
-                        .position(LatLng(t.paradaSubida.latitud, t.paradaSubida.longitud))
-                        .title("Subir a Línea ${t.subirA} (${t.paradaSubida.nombre})")
-                        .snippet(t.paradaSubida.id)
-                        .icon(iconoTransbordo)
-                )
-            } else {
-                map.addMarker(
-                    MarkerOptions()
-                        .position(LatLng(t.parada.latitud, t.parada.longitud))
-                        .title("Transbordo: ${t.bajarDe} → ${t.subirA}")
-                        .snippet(t.parada.id)
-                        .icon(iconoTransbordo)
-                )
-            }
-        }
-
-        ruta.paradas.firstOrNull()?.let {
-            map.addMarker(
-                MarkerOptions()
-                    .position(LatLng(it.latitud, it.longitud))
-                    .title("Origen: ${it.nombre}")
-                    .snippet(it.id)
-                    .icon(iconoOrigen)
+        if (puntosFoco.isNotEmpty()) {
+            encuadrarPuntosSeguro(
+                map = map,
+                puntos = puntosFoco,
+                paddingBottomPx = bottomPaddingPx
             )
-        }
-        ruta.paradas.lastOrNull()?.let {
-            map.addMarker(
-                MarkerOptions()
-                    .position(LatLng(it.latitud, it.longitud))
-                    .title("Destino: ${it.nombre}")
-                    .snippet(it.id)
-                    .icon(iconoDestino)
-            )
-        }
-
-        if (ruta.paradas.size >= 2) {
-            val builder = LatLngBounds.Builder()
-            ruta.paradas.forEach { builder.include(LatLng(it.latitud, it.longitud)) }
-            val bounds = builder.build()
-
-            mapView.post {
-                if (mapView.width > 0 && mapView.height > 0) {
-                    try {
-                        map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 140), 900)
-                    } catch (_: Exception) {}
-                }
-            }
         }
     }
 
     AndroidView(
-        factory = { mapView },
-        modifier = modifier.fillMaxSize()
+        factory = {
+            mapView.apply {
+                getMapAsync { map ->
+                    mapaInstancia = map
+                    map.uiSettings.apply {
+                        isRotateGesturesEnabled = true
+                        isTiltGesturesEnabled = false
+                        isCompassEnabled = true
+                        isAttributionEnabled = false
+                        isLogoEnabled = false
+                    }
+
+                    map.cameraPosition = CameraPosition.Builder()
+                        .target(CENTRO_BARILOCHE)
+                        .zoom(ZOOM_INICIAL_BARILOCHE)
+                        .build()
+
+                    // Cargar el mismo mapa vectorial oscuro original (sin API key)
+                    map.setStyle(Style.Builder().fromUri(URL_ESTILO_MAPA_ORIGINAL)) { style ->
+                        inicializarCapasStyle(style)
+                        actualizarFuentesGeoJson(
+                            style = style,
+                            paradas = paradasActuales,
+                            ruta = rutaActual,
+                            segmentosAdmin = segmentosActuales
+                        )
+                        activarIndicadorUbicacionNativo(context, map, style)
+                        estiloListo = true
+                    }
+
+                    map.addOnMapClickListener { point ->
+                        val screenPoint: PointF = map.projection.toScreenLocation(point)
+                        val cajaTactil = RectF(
+                            screenPoint.x - hitRadiusPx,
+                            screenPoint.y - hitRadiusPx,
+                            screenPoint.x + hitRadiusPx,
+                            screenPoint.y + hitRadiusPx
+                        )
+
+                        val features = map.queryRenderedFeatures(cajaTactil, LAYER_PARADAS)
+                        val paradaEncontrada = features.asSequence()
+                            .mapNotNull { feat ->
+                                val id = feat.getStringProperty("id")
+                                if (id.isNullOrBlank()) null else paradasPorIdActual[id]
+                            }
+                            .firstOrNull()
+
+                        if (paradaEncontrada != null) {
+                            onParadaClickActual(paradaEncontrada)
+                            true
+                        } else {
+                            val listenerLibre = onPuntoTocadoActual
+                            if (listenerLibre != null) {
+                                listenerLibre(point.latitude, point.longitude)
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        modifier = modifier
     )
 }
 
-/**
- * Inicializa las fuentes GeoJSON y capas GL en GPU para dibujar:
- * 1) Líneas de colectivo sólidas con borde blanco.
- * 2) Tramos peatonales punteados (lineDasharray) en naranja.
- */
-private fun inicializarCapasRuta(style: Style) {
-    if (style.getSource(SRC_BUS) == null) {
-        style.addSource(GeoJsonSource(SRC_BUS))
-    }
-    if (style.getSource(SRC_WALK) == null) {
-        style.addSource(GeoJsonSource(SRC_WALK))
-    }
+private fun inicializarCapasStyle(style: Style) {
+    if (style.getSource(SRC_ADMIN) == null) style.addSource(GeoJsonSource(SRC_ADMIN))
+    if (style.getSource(SRC_RUTA_WALK) == null) style.addSource(GeoJsonSource(SRC_RUTA_WALK))
+    if (style.getSource(SRC_RUTA_BUS) == null) style.addSource(GeoJsonSource(SRC_RUTA_BUS))
+    if (style.getSource(SRC_PARADAS) == null) style.addSource(GeoJsonSource(SRC_PARADAS))
 
-    if (style.getLayer(LYR_BUS_CASING) == null) {
+    if (style.getLayer(LAYER_ADMIN) == null) {
         style.addLayer(
-            LineLayer(LYR_BUS_CASING, SRC_BUS).withProperties(
-                PropertyFactory.lineColor("#FFFFFF"),
-                PropertyFactory.lineWidth(8.5f),
-                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+            LineLayer(LAYER_ADMIN, SRC_ADMIN).withProperties(
+                lineColor("#4FC3F7"),
+                lineWidth(3.5f),
+                lineOpacity(0.85f),
+                lineCap(Property.LINE_CAP_ROUND),
+                lineJoin(Property.LINE_JOIN_ROUND)
             )
         )
     }
 
-    if (style.getLayer(LYR_BUS) == null) {
+    if (style.getLayer(LAYER_RUTA_WALK) == null) {
         style.addLayer(
-            LineLayer(LYR_BUS, SRC_BUS).withProperties(
-                PropertyFactory.lineColor(Expression.get("color")),
-                PropertyFactory.lineWidth(5.5f),
-                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+            LineLayer(LAYER_RUTA_WALK, SRC_RUTA_WALK).withProperties(
+                lineColor("#81C784"),
+                lineWidth(4.5f),
+                lineDasharray(arrayOf(2.0f, 2.0f)),
+                lineCap(Property.LINE_CAP_ROUND),
+                lineJoin(Property.LINE_JOIN_ROUND)
             )
         )
     }
 
-    if (style.getLayer(LYR_WALK_CASING) == null) {
+    if (style.getLayer(LAYER_RUTA_BUS) == null) {
         style.addLayer(
-            LineLayer(LYR_WALK_CASING, SRC_WALK).withProperties(
-                PropertyFactory.lineColor("#FFFFFF"),
-                PropertyFactory.lineWidth(7.0f),
-                PropertyFactory.lineCap(Property.LINE_CAP_ROUND)
+            LineLayer(LAYER_RUTA_BUS, SRC_RUTA_BUS).withProperties(
+                lineColor(get("color")),
+                lineWidth(6.0f),
+                lineCap(Property.LINE_CAP_ROUND),
+                lineJoin(Property.LINE_JOIN_ROUND)
             )
         )
     }
 
-    if (style.getLayer(LYR_WALK) == null) {
+    if (style.getLayer(LAYER_PARADAS) == null) {
         style.addLayer(
-            LineLayer(LYR_WALK, SRC_WALK).withProperties(
-                PropertyFactory.lineColor(COLOR_CAMINATA_HEX),
-                PropertyFactory.lineWidth(4.5f),
-                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                PropertyFactory.lineDasharray(arrayOf(1.6f, 1.4f))
+            CircleLayer(LAYER_PARADAS, SRC_PARADAS).withProperties(
+                circleRadius(
+                    switchCase(
+                        eq(get("rol"), literal("origen")), literal(9.5f),
+                        eq(get("rol"), literal("destino")), literal(9.5f),
+                        eq(get("rol"), literal("gps")), literal(9.0f),
+                        eq(get("rol"), literal("transbordo")), literal(8.5f),
+                        literal(4.2f) // Radio discreto para paradas de fondo
+                    )
+                ),
+                circleColor(
+                    switchCase(
+                        eq(get("rol"), literal("origen")), literal("#2E7D32"),     // Verde Origen/Subida
+                        eq(get("rol"), literal("destino")), literal("#D84315"),    // Rojo/Naranja Destino
+                        eq(get("rol"), literal("gps")), literal("#00C853"),        // Verde brillante GPS
+                        eq(get("rol"), literal("transbordo")), literal("#F57C00"), // Ámbar Transbordo
+                        literal("#5C93B8")                                         // Azul acero suave (bajo contraste)
+                    )
+                ),
+                circleOpacity(
+                    switchCase(
+                        eq(get("rol"), literal("normal")), literal(0.62f), // Semitransparente para no tapar calles
+                        literal(0.96f)                                     // Opaco y nítido en nodos activos
+                    )
+                ),
+                circleBlur(
+                    switchCase(
+                        eq(get("rol"), literal("normal")), literal(0.25f), // Anti-aliasing subpíxel SDF sin borde
+                        literal(0.0f)
+                    )
+                ),
+                circleStrokeWidth(
+                    switchCase(
+                        eq(get("rol"), literal("normal")), literal(0.0f), // Sin borde negro en paradas estándar
+                        literal(2.2f)                                     // Halo solo en marcadores activos
+                    )
+                ),
+                circleStrokeColor("#FFFFFF") // Halo blanco limpio para resaltar los pines activos
             )
         )
     }
 }
 
-private fun crearBitmapCirculo(color: Int, tamanoDp: Int, contexto: Context, conBorde: Boolean = true): Bitmap {
-    val densidad = contexto.resources.displayMetrics.density
-    val px = (tamanoDp * densidad).toInt().coerceAtLeast(10)
-    val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    val centro = px / 2f
+private fun esCoordenadaValida(lat: Double, lon: Double): Boolean =
+    lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0
 
-    if (conBorde) {
-        val paintBorde = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = android.graphics.Color.WHITE
-            style = Paint.Style.FILL
+private fun actualizarFuentesGeoJson(
+    style: Style,
+    paradas: List<Parada>,
+    ruta: Ruta?,
+    segmentosAdmin: List<Pair<Parada, Parada>>
+) {
+    val featuresParadas = ArrayList<Feature>(paradas.size)
+    for (p in paradas) {
+        if (!esCoordenadaValida(p.latitud, p.longitud)) continue
+        val rol = when {
+            p.id == "gps_origen" || p.nombre.startsWith("🟢 TU UBICACIÓN") -> "gps"
+            p.nombre.startsWith("🟢") || p.nombre.startsWith("🚌 SUBIDA") -> "origen"
+            p.nombre.startsWith("🏁") -> "destino"
+            p.nombre.startsWith("⇄") -> "transbordo"
+            else -> "normal"
         }
-        canvas.drawCircle(centro, centro, centro, paintBorde)
+        val feat = Feature.fromGeometry(Point.fromLngLat(p.longitud, p.latitud)).apply {
+            addStringProperty("id", p.id)
+            addStringProperty("nombre", p.nombre)
+            addStringProperty("rol", rol)
+        }
+        featuresParadas.add(feat)
+    }
+    style.getSourceAs<GeoJsonSource>(SRC_PARADAS)
+        ?.setGeoJson(FeatureCollection.fromFeatures(featuresParadas))
+
+    val featuresWalk = ArrayList<Feature>()
+    val featuresBus = ArrayList<Feature>()
+
+    if (ruta != null) {
+        if (ruta.etapas.isNotEmpty()) {
+            val paradasRuta = ruta.paradas
+            for (etapa in ruta.etapas) {
+                val puntosEtapa = extraerSubtrayecto(paradasRuta, etapa.origen, etapa.destino)
+                if (puntosEtapa.size >= 2) {
+                    val lineString = LineString.fromLngLats(puntosEtapa)
+                    if (etapa.linea == "CAMINANDO") {
+                        featuresWalk.add(Feature.fromGeometry(lineString))
+                    } else {
+                        val colorInt = colorParaLinea(etapa.linea).toArgb()
+                        val hexColor = String.format("#%06X", 0xFFFFFF and colorInt)
+                        val featBus = Feature.fromGeometry(lineString).apply {
+                            addStringProperty("color", hexColor)
+                        }
+                        featuresBus.add(featBus)
+                    }
+                }
+            }
+        } else if (ruta.paradas.size >= 2) {
+            val pts = ruta.paradas
+                .filter { esCoordenadaValida(it.latitud, it.longitud) }
+                .map { Point.fromLngLat(it.longitud, it.latitud) }
+            if (pts.size >= 2) {
+                val featBus = Feature.fromGeometry(LineString.fromLngLats(pts)).apply {
+                    addStringProperty("color", "#4FC3F7")
+                }
+                featuresBus.add(featBus)
+            }
+        }
     }
 
-    val paintRelleno = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        this.color = color
-        style = Paint.Style.FILL
-    }
-    val radioRelleno = if (conBorde) centro - (2.2f * densidad) else centro
-    canvas.drawCircle(centro, centro, radioRelleno.coerceAtLeast(2f), paintRelleno)
+    style.getSourceAs<GeoJsonSource>(SRC_RUTA_WALK)
+        ?.setGeoJson(FeatureCollection.fromFeatures(featuresWalk))
+    style.getSourceAs<GeoJsonSource>(SRC_RUTA_BUS)
+        ?.setGeoJson(FeatureCollection.fromFeatures(featuresBus))
 
-    return bitmap
+    val featuresAdmin = ArrayList<Feature>(segmentosAdmin.size)
+    for ((a, b) in segmentosAdmin) {
+        if (!esCoordenadaValida(a.latitud, a.longitud) || !esCoordenadaValida(b.latitud, b.longitud)) continue
+        val line = LineString.fromLngLats(
+            listOf(
+                Point.fromLngLat(a.longitud, a.latitud),
+                Point.fromLngLat(b.longitud, b.latitud)
+            )
+        )
+        featuresAdmin.add(Feature.fromGeometry(line))
+    }
+    style.getSourceAs<GeoJsonSource>(SRC_ADMIN)
+        ?.setGeoJson(FeatureCollection.fromFeatures(featuresAdmin))
+}
+
+private fun extraerSubtrayecto(
+    paradasRuta: List<Parada>,
+    origen: Parada,
+    destino: Parada
+): List<Point> {
+    val idxInicio = paradasRuta.indexOfFirst { it.id == origen.id }
+    val idxFin = if (idxInicio >= 0) {
+        paradasRuta.drop(idxInicio + 1).indexOfFirst { it.id == destino.id }
+            .let { rel -> if (rel >= 0) idxInicio + 1 + rel else -1 }
+    } else {
+        -1
+    }
+
+    val seleccionados = if (idxInicio >= 0 && idxFin > idxInicio) {
+        paradasRuta.subList(idxInicio, idxFin + 1)
+    } else {
+        listOf(origen, destino)
+    }
+
+    return seleccionados
+        .filter { esCoordenadaValida(it.latitud, it.longitud) }
+        .map { Point.fromLngLat(it.longitud, it.latitud) }
+}
+
+private fun encuadrarPuntosSeguro(
+    map: MapLibreMap,
+    puntos: List<LatLng>,
+    paddingBottomPx: Int
+) {
+    val validos = puntos.filter { esCoordenadaValida(it.latitude, it.longitude) }
+    if (validos.isEmpty()) return
+
+    if (validos.size == 1) {
+        map.animateCamera(CameraUpdateFactory.newLatLngZoom(validos.first(), 15.2), 450)
+        return
+    }
+
+    var minLat = Double.POSITIVE_INFINITY
+    var maxLat = Double.NEGATIVE_INFINITY
+    var minLon = Double.POSITIVE_INFINITY
+    var maxLon = Double.NEGATIVE_INFINITY
+
+    for (p in validos) {
+        minLat = min(minLat, p.latitude)
+        maxLat = max(maxLat, p.latitude)
+        minLon = min(minLon, p.longitude)
+        maxLon = max(maxLon, p.longitude)
+    }
+
+    if (maxLat - minLat < MARGEN_MINIMO_GRADOS) {
+        val centroLat = (minLat + maxLat) * 0.5
+        minLat = centroLat - MARGEN_MINIMO_GRADOS * 0.5
+        maxLat = centroLat + MARGEN_MINIMO_GRADOS * 0.5
+    }
+    if (maxLon - minLon < MARGEN_MINIMO_GRADOS) {
+        val centroLon = (minLon + maxLon) * 0.5
+        minLon = centroLon - MARGEN_MINIMO_GRADOS * 0.5
+        maxLon = centroLon + MARGEN_MINIMO_GRADOS * 0.5
+    }
+
+    val bounds = LatLngBounds.Builder()
+        .include(LatLng(minLat, minLon))
+        .include(LatLng(maxLat, maxLon))
+        .build()
+
+    map.animateCamera(
+        CameraUpdateFactory.newLatLngBounds(
+            bounds,
+            80,
+            130,
+            80,
+            paddingBottomPx
+        ),
+        550
+    )
+}
+
+@SuppressLint("MissingPermission")
+private fun activarIndicadorUbicacionNativo(context: Context, map: MapLibreMap, style: Style) {
+    if (!GestorUbicacion.tienePermisoUbicacion(context)) return
+    runCatching {
+        val locationComponent = map.locationComponent
+        if (!locationComponent.isLocationComponentActivated) {
+            val opciones = LocationComponentActivationOptions.builder(context, style)
+                .useDefaultLocationEngine(true)
+                .build()
+            locationComponent.activateLocationComponent(opciones)
+        }
+        locationComponent.isLocationComponentEnabled = true
+        locationComponent.renderMode = RenderMode.COMPASS
+        locationComponent.cameraMode = CameraMode.NONE
+    }
 }

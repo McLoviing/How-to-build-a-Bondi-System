@@ -1,0 +1,8 @@
+{"timestamp_utc": "2026-11-17T18:01:20.155914+00:00", "accion": "crear_parada", "detalle": {"parada_id": "p_527"}}
+{"timestamp_utc": "2026-11-17T18:01:39.304724+00:00", "accion": "crear_linea_900", "detalle": {"consulta": "assertz(linea('900'))"}}
+{"timestamp_utc": "2026-11-17T18:02:23.384983+00:00", "accion": "tramo_900_p_527_p_265", "detalle": {"consulta": "retractall(tramo('900',p_527,p_265,_,_)), assertz(tramo('900', p_527, p_265, 1781.0, 5.2)), assertz(pasa_por('900',p_265)), assertz(pasa_por"}}
+{"timestamp_utc": "2026-11-17T18:03:49.924045+00:00", "accion": "rollback", "detalle": {"snapshot_restaurado": "snap_20261117_180223_364617_tramo_900_p_527_p_265.pl"}}
+{"timestamp_utc": "2026-11-17T18:04:00.994253+00:00", "accion": "rollback", "detalle": {"snapshot_restaurado": "snap_20261117_180223_364617_tramo_900_p_527_p_265.pl"}}
+{"timestamp_utc": "2026-11-17T18:04:26.266054+00:00", "accion": "reset_fabrica", "detalle": {"base": "base.pl"}}
+{"timestamp_utc": "2026-11-17T22:36:13.411386+00:00", "accion": "crear_linea_900", "detalle": {"consulta": "assertz(linea('900'))"}}
+{"timestamp_utc": "2026-11-17T22:37:14.195682+00:00", "accion": "reset_fabrica", "detalle": {"base": "base.pl"}}
