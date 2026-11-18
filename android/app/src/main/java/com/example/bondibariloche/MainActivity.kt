@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.bondibariloche.data.ApiConfig
 import com.example.bondibariloche.data.BondiApi
 import com.example.bondibariloche.data.Parada
 import kotlinx.coroutines.CancellationException
@@ -61,6 +62,7 @@ class MainActivity : ComponentActivity() {
         MapLibre.getInstance(applicationContext)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        ApiConfig.inicializar(applicationContext)
 
         setContent {
             MaterialTheme(colorScheme = BondiDarkColorScheme) {
@@ -75,6 +77,7 @@ private fun AplicacionBondiBariloche() {
     var estado by remember { mutableStateOf<EstadoArranque>(EstadoArranque.Cargando) }
     var mostrarAdmin by rememberSaveable { mutableStateOf(false) }
     var refrescarTrigger by remember { mutableIntStateOf(0) }
+    var mostrarServidor by rememberSaveable { mutableStateOf(false) }
 
     BackHandler(enabled = mostrarAdmin) {
         mostrarAdmin = false
@@ -86,6 +89,18 @@ private fun AplicacionBondiBariloche() {
             estado = EstadoArranque.Cargando
         }
         estado = descargarParadasConReintentos()
+    }
+
+    if (mostrarServidor) {
+        DialogServidor(
+            cerrar = { mostrarServidor = false },
+            guardado = {
+                mostrarServidor = false
+                mostrarAdmin = false
+                estado = EstadoArranque.Cargando
+                refrescarTrigger++
+            }
+        )
     }
 
     if (mostrarAdmin) {
@@ -100,7 +115,7 @@ private fun AplicacionBondiBariloche() {
 
     when (val actual = estado) {
         is EstadoArranque.Cargando -> {
-            PantallaCargaInicial()
+            PantallaCargaInicial(onConfigurar = { mostrarServidor = true })
         }
 
         is EstadoArranque.ErrorFatal -> {
@@ -110,21 +125,22 @@ private fun AplicacionBondiBariloche() {
                     estado = EstadoArranque.Cargando
                     refrescarTrigger++
                 },
-                onAbrirAdmin = { mostrarAdmin = true }
+                onConfigurar = { mostrarServidor = true }
             )
         }
 
         is EstadoArranque.Listo -> {
             PantallaPasajero(
                 paradas = actual.paradas,
-                abrirAdmin = { mostrarAdmin = true }
+                abrirAdmin = { mostrarAdmin = true },
+                configurarServidor = { mostrarServidor = true }
             )
         }
     }
 }
 
 @Composable
-private fun PantallaCargaInicial() {
+private fun PantallaCargaInicial(onConfigurar: () -> Unit) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
@@ -139,6 +155,7 @@ private fun PantallaCargaInicial() {
                 text = "Conectando con la red de colectivos de Bariloche...",
                 style = MaterialTheme.typography.bodyMedium
             )
+            TextButton(onClick = onConfigurar) { Text("Configurar servidor") }
         }
     }
 }
@@ -147,7 +164,7 @@ private fun PantallaCargaInicial() {
 private fun PantallaErrorConexion(
     mensaje: String,
     onReintentar: () -> Unit,
-    onAbrirAdmin: () -> Unit
+    onConfigurar: () -> Unit
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
@@ -171,8 +188,8 @@ private fun PantallaErrorConexion(
             Button(onClick = onReintentar) {
                 Text("Reintentar conexión")
             }
-            TextButton(onClick = onAbrirAdmin) {
-                Text("Configuración de servidor / Admin")
+            TextButton(onClick = onConfigurar) {
+                Text("Configurar servidor")
             }
         }
     }
