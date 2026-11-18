@@ -42,7 +42,8 @@ import kotlin.math.roundToInt
 @Composable
 fun PantallaPasajero(
     paradas: List<Parada>,
-    abrirAdmin: () -> Unit
+    abrirAdmin: () -> Unit,
+    configurarServidor: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -590,6 +591,10 @@ fun PantallaPasajero(
                 mostrarConfiguracion = false
                 abrirAdmin()
             },
+            onConfigurarServidor = {
+                mostrarConfiguracion = false
+                configurarServidor()
+            },
             cerrar = { mostrarConfiguracion = false }
         )
     }
@@ -940,6 +945,7 @@ private fun DialogConfiguracionPasajero(
     radioCaminataActual: Float,
     onCambiarRadio: (Float) -> Unit,
     onDesbloquearAdmin: () -> Unit,
+    onConfigurarServidor: () -> Unit,
     cerrar: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -971,6 +977,10 @@ private fun DialogConfiguracionPasajero(
                 }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                OutlinedButton(onClick = onConfigurarServidor, modifier = Modifier.fillMaxWidth()) {
+                    Text("Configurar servidor")
+                }
 
                 // Tarjeta de información con gesto oculto de 5 toques en < 2000 ms para abrir Admin
                 Surface(

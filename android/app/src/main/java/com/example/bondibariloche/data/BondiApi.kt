@@ -17,6 +17,7 @@ object ApiConfig {
     private const val PREFS_NAME = "bondi_api_prefs"
     private const val CLAVE_URL = "api_base_url"
 
+    @Volatile
     var baseUrl: String = "http://192.168.1.2:8000"
         private set
 
@@ -31,18 +32,24 @@ object ApiConfig {
     }
 
     fun guardarUrl(contexto: Context, nuevaUrl: String) {
-        var limpia = nuevaUrl.trim()
-        if (!limpia.startsWith("http://") && !limpia.startsWith("https://")) {
-            limpia = "http://$limpia"
-        }
-        if (limpia.endsWith("/")) {
-            limpia = limpia.dropLast(1)
-        }
+        val limpia = normalizarUrl(nuevaUrl)
         baseUrl = limpia
         contexto.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit {
                 putString(CLAVE_URL, limpia)
             }
+    }
+
+    fun normalizarUrl(entrada: String): String {
+        val texto = entrada.trim().trimEnd('/')
+        val url = java.net.URI(if (texto.contains("://")) texto else "http://$texto")
+        require(url.scheme in listOf("http", "https") && url.host != null &&
+            url.userInfo == null && url.rawQuery == null && url.rawFragment == null &&
+            url.rawPath.isNullOrEmpty() && (url.port == -1 || url.port in 1..65535)) {
+            "Ingresá una dirección válida, por ejemplo 192.168.1.34:8000."
+        }
+        val puerto = if (url.port == -1 && url.scheme == "http") 8000 else url.port
+        return java.net.URI(url.scheme, null, url.host, puerto, null, null, null).toString()
     }
 
     private fun esEmulador(): Boolean {
@@ -68,6 +75,15 @@ object BondiApi {
         }
     }
 
+    suspend fun probarServidor(direccion: String): Int = withContext(Dispatchers.IO) {
+        val url = ApiConfig.normalizarUrl(direccion)
+        convertir {
+            val arreglo = JSONArray(pedir("/paradas", url))
+            repeat(arreglo.length()) { parsearParada(arreglo.getJSONObject(it)) }
+            arreglo.length()
+        }
+    }
+
     suspend fun obtenerRutas(
         origenId: String,
         destinoId: String,
@@ -81,8 +97,8 @@ object BondiApi {
         }
     }
 
-    private fun pedir(rutaYConsulta: String): String {
-        val urlCompleta = ApiConfig.baseUrl + rutaYConsulta
+    private fun pedir(rutaYConsulta: String, base: String = ApiConfig.baseUrl): String {
+        val urlCompleta = base + rutaYConsulta
         val conexion = URL(urlCompleta).openConnection() as HttpURLConnection
         try {
             conexion.requestMethod = "GET"
@@ -98,7 +114,7 @@ object BondiApi {
             return cuerpo
         } catch (e: IOException) {
             throw ApiException(
-                "No se pudo conectar con el servidor (${ApiConfig.baseUrl}). " +
+                "No se pudo conectar con el servidor ($base). " +
                         "Revisá que la API esté encendida y que la dirección IP sea correcta."
             )
         } finally {
@@ -156,7 +172,7 @@ object BondiApi {
         val etapas = o.getJSONArray("etapas")
         val transbordos = o.optJSONArray("transbordos_detalle") ?: JSONArray()
         val paradas = o.getJSONArray("paradas")
-        val msgRaw = if (o.isNull("mensaje_usuario")) null else o.optString("mensaje_usuario", null)
+        val msgRaw = if (o.isNull("mensaje_usuario")) null else o.optString("mensaje_usuario", "")
 
         return Ruta(
             esRutaExacta = o.optBoolean("es_ruta_exacta", true),
