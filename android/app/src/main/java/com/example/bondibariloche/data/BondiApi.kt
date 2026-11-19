@@ -87,12 +87,17 @@ object BondiApi {
     suspend fun obtenerRutas(
         origenId: String,
         destinoId: String,
-        alternativas: Int = 5
+        alternativas: Int = 5,
+        maxCaminata: Float? = null
     ): List<Ruta> = withContext(Dispatchers.IO) {
         val o = URLEncoder.encode(origenId, "UTF-8")
         val d = URLEncoder.encode(destinoId, "UTF-8")
+        val consulta = StringBuilder("/rutas?origen=$o&destino=$d&alternativas=$alternativas")
+        if (maxCaminata != null) {
+            consulta.append("&max_caminata=${maxCaminata.toInt()}")
+        }
         convertir {
-            val arreglo = JSONArray(pedir("/rutas?origen=$o&destino=$d&alternativas=$alternativas"))
+            val arreglo = JSONArray(pedir(consulta.toString()))
             List(arreglo.length()) { i -> parsearRuta(arreglo.getJSONObject(i)) }
         }
     }

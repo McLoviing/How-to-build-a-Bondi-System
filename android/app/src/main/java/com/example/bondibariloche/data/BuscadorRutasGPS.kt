@@ -19,7 +19,8 @@ object BuscadorRutasGps {
         latUsuario: Double,
         lonUsuario: Double,
         candidatas: List<ParadaCandidataGps>,
-        destino: Parada
+        destino: Parada,
+        maxCaminata: Float? = null
     ): List<Ruta> = supervisorScope {
         if (candidatas.isEmpty()) return@supervisorScope emptyList()
 
@@ -60,7 +61,7 @@ object BuscadorRutasGps {
                         )
                     }
 
-                    BondiApi.obtenerRutas(cand.parada.id, destino.id).map { ruta ->
+                    BondiApi.obtenerRutas(cand.parada.id, destino.id, maxCaminata = maxCaminata).map { ruta ->
                         integrarCaminataInicial(
                             ruta = ruta,
                             puntoGps = puntoGps,

@@ -11,12 +11,10 @@ import kotlin.math.sqrt
 class IndiceEspacialParadas(paradas: List<Parada>) {
 
     companion object {
-        private const val K_LAT = 111132.95
-        private const val K_LON = 83715.4
         private const val TAMANO_CELDA_METROS = 300.0
 
-        private fun celdaX(lon: Double): Int = floor((lon * K_LON) / TAMANO_CELDA_METROS).toInt()
-        private fun celdaY(lat: Double): Int = floor((lat * K_LAT) / TAMANO_CELDA_METROS).toInt()
+        private fun celdaX(lon: Double): Int = floor((lon * CalculosGeograficos.K_LON) / TAMANO_CELDA_METROS).toInt()
+        private fun celdaY(lat: Double): Int = floor((lat * CalculosGeograficos.K_LAT) / TAMANO_CELDA_METROS).toInt()
 
         /** Empaqueta dos coordenadas Int (gx, gy) en un único Long sin asignar objetos en el heap. */
         private fun empaquetarClave(gx: Int, gy: Int): Long =
@@ -53,9 +51,7 @@ class IndiceEspacialParadas(paradas: List<Parada>) {
             for (dy in -1..1) {
                 val bucket = celdas[empaquetarClave(gxCentro + dx, gyCentro + dy)] ?: continue
                 for (parada in bucket) {
-                    val dLat = (parada.latitud - lat) * K_LAT
-                    val dLon = (parada.longitud - lon) * K_LON
-                    val d2 = dLat * dLat + dLon * dLon
+                    val d2 = CalculosGeograficos.distanciaCuadradaMetros(lat, lon, parada.latitud, parada.longitud)
                     if (d2 <= radioCuadrado) {
                         candidatos.add(parada to sqrt(d2))
                     }

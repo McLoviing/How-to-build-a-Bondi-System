@@ -13,6 +13,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.bondibariloche.data.CalculosGeograficos
 import com.example.bondibariloche.data.GestorUbicacion
 import com.example.bondibariloche.data.Parada
 import com.example.bondibariloche.data.Ruta
@@ -53,7 +54,7 @@ private const val LAYER_RUTA_BUS = "layer-ruta-bus"
 private const val LAYER_PARADAS = "layer-paradas"
 
 // Constantes geodésicas y ergonómicas calibradas para San Carlos de Bariloche
-private val CENTRO_BARILOCHE = LatLng(-41.1335, -71.3103)
+private val CENTRO_BARILOCHE = LatLng(CalculosGeograficos.CENTRO_BARILOCHE_LAT, CalculosGeograficos.CENTRO_BARILOCHE_LON)
 private const val ZOOM_INICIAL_BARILOCHE = 13.2
 private const val MARGEN_MINIMO_GRADOS = 0.0018 // ~200 m; previene bounds degenerados
 private const val RADIO_HIT_TEST_DP = 18f       // Área táctil ergonómica de 36x36 dp

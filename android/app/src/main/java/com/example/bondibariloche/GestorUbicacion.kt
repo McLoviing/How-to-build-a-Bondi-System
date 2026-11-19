@@ -45,16 +45,8 @@ data class ParadaCandidataGps(
 
 object GestorUbicacion {
 
-    // Geocerca de San Carlos de Bariloche
-    private const val LAT_MIN = -41.35
-    private const val LAT_MAX = -40.95
-    private const val LON_MIN = -71.75
-    private const val LON_MAX = -71.05
-
     private const val TIMEOUT_GPS_MS = 8_000L
     private const val PRECISION_MINIMA_METROS = 65.0f
-    private const val TORTUOSIDAD_PEATONAL = 1.20
-    private const val VELOCIDAD_PEATONAL_M_MIN = 75.0 // 4.5 km/h
 
     fun tienePermisoUbicacion(context: Context): Boolean {
         val fine = ContextCompat.checkSelfPermission(
@@ -77,15 +69,14 @@ object GestorUbicacion {
     }
 
     fun estaEnBariloche(lat: Double, lon: Double): Boolean =
-        lat in LAT_MIN..LAT_MAX && lon in LON_MIN..LON_MAX
+        lat in CalculosGeograficos.LAT_MIN..CalculosGeograficos.LAT_MAX &&
+        lon in CalculosGeograficos.LON_MIN..CalculosGeograficos.LON_MAX
 
     /**
      * Calcula los minutos de caminata urbana desde el punto GPS hasta una parada.
      */
-    fun estimarMinutosCaminata(distanciaRectaMetros: Double): Int {
-        val distanciaReal = distanciaRectaMetros * TORTUOSIDAD_PEATONAL
-        return max(1, ceil(distanciaReal / VELOCIDAD_PEATONAL_M_MIN).toInt())
-    }
+    fun estimarMinutosCaminata(distanciaRectaMetros: Double): Int =
+        CalculosGeograficos.estimarMinutosCaminata(distanciaRectaMetros)
 
     /**
      * Obtiene la ubicación actual con timeout acotado, apagado automático del sensor

@@ -165,6 +165,7 @@ def buscar_rutas(
     origen_id: str,
     destino_id: str,
     max_rutas: int = CANTIDAD_ALTERNATIVAS,
+    max_caminata: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     origen_seguro = _validar_atomo_prolog(origen_id)
     destino_seguro = _validar_atomo_prolog(destino_id)
@@ -183,7 +184,12 @@ def buscar_rutas(
             "transbordos_detalle": [],
         }]
 
-    consulta = f"buscar_rutas_json({origen_seguro}, {destino_seguro}, {limite}, JsonSalida)"
+    if max_caminata is not None:
+        caminata_flotante = max(50.0, min(float(max_caminata), 1500.0))
+        consulta = f"buscar_rutas_json({origen_seguro}, {destino_seguro}, {limite}, {caminata_flotante}, JsonSalida)"
+    else:
+        consulta = f"buscar_rutas_json({origen_seguro}, {destino_seguro}, {limite}, JsonSalida)"
+
     with _PROLOG_LOCK:
         query = prolog.query(consulta)
         try:

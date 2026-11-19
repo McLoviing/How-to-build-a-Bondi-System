@@ -4428,61 +4428,6 @@ tramo('84', p_511, p_512, 326.9, 1.4).
 tramo('84', p_512, p_173, 52.0, 0.6).
 
 % ==================================================================
-% REGLAS LÓGICAS PARA CONSULTAS Y RUTAS
-% ==================================================================
-
-% 1. Conexión directa inmediata entre dos paradas
-conexion_directa(Origen, Destino, Linea, Distancia, Tiempo) :-
-    tramo(Linea, Origen, Destino, Distancia, Tiempo).
-
-% 2. Ambas paradas pertenecen a la misma línea
-misma_linea(Origen, Destino, Linea) :-
-    pasa_por(Linea, Origen),
-    pasa_por(Linea, Destino),
-    Origen \= Destino.
-
-% 3. Listar líneas que pasan por una parada dada
-lineas_en_parada(Parada, Lineas) :-
-    findall(Linea, pasa_por(Linea, Parada), Lineas).
-
-% 4. Paradas compartidas entre dos líneas (puntos potenciales de combinación)
-paradas_de_combinacion(Linea1, Linea2, Parada) :-
-    Linea1 \= Linea2,
-    pasa_por(Linea1, Parada),
-    pasa_por(Linea2, Parada).
-
-% 5. Ruta directa sobre una misma línea (evitando ciclos y con poda rápida)
-ruta_misma_linea(Origen, Destino, Linea, Camino, DistTotal, TiempoTotal) :-
-    pasa_por(Linea, Origen),
-    pasa_por(Linea, Destino),
-    Origen \= Destino,
-    ruta_linea_dfs(Origen, Destino, Linea, [Origen], Camino, DistTotal, TiempoTotal).
-
-ruta_linea_dfs(Destino, Destino, _, _, [Destino], 0.0, 0.0).
-ruta_linea_dfs(Actual, Destino, Linea, Visitados, [Actual|Resto], DistTotal, TiempoTotal) :-
-    Actual \= Destino,
-    tramo(Linea, Actual, Siguiente, Dist1, T1),
-    \+ member(Siguiente, Visitados),
-    ruta_linea_dfs(Siguiente, Destino, Linea, [Siguiente|Visitados], Resto, Dist2, T2),
-    DistTotal is Dist1 + Dist2,
-    TiempoTotal is T1 + T2.
-
-% 6. Ruta con un transbordo entre dos líneas distintas
-ruta_con_un_transbordo(Origen, Destino, Linea1, Transbordo, Linea2, Camino1, Camino2, DistTotal, TiempoTotal) :-
-    pasa_por(Linea1, Origen),
-    pasa_por(Linea2, Destino),
-    Linea1 \= Linea2,
-    pasa_por(Linea1, Transbordo),
-    pasa_por(Linea2, Transbordo),
-    Transbordo \= Origen,
-    Transbordo \= Destino,
-    ruta_misma_linea(Origen, Transbordo, Linea1, Camino1, Dist1, T1),
-    ruta_misma_linea(Transbordo, Destino, Linea2, Camino2, Dist2, T2),
-    DistTotal is Dist1 + Dist2,
-    % Tiempo estimado de espera por transbordo: 8.0 minutos
-    TiempoTotal is T1 + T2 + 8.0.
-
-% ==================================================================
 % UTILIDADES GEOESPACIALES RÁPIDAS (PROYECCIÓN EQUIRECTANGULAR WGS84)
 % ==================================================================
 % Calibrado para San Carlos de Bariloche (Latitud media: -41.13°)
@@ -4509,7 +4454,7 @@ tiempo_caminata_minutos(Metros, Minutos) :-
 
 inicializar_grafo :-
     limpiar_tramos_duplicados,
-    precalcular_caminatas(300.0).
+    precalcular_caminatas(800.0).
 
 % Elimina tramos duplicados (exactos o subóptimos) dejando solo el más corto
 limpiar_tramos_duplicados :-
@@ -4571,21 +4516,24 @@ heuristica_tiempo(Nodo, Destino, H) :-
 
 % Estado: estado(Actual, UltimaLineaReal, UltimoModo, ParadasVis, LineasUsadas, Dist, DistCaminada, TiempoViaje, Transbordos, Tramos)
 buscar_rutas_optimas(Origen, Destino, MaxRutas, Rutas) :-
+    buscar_rutas_optimas(Origen, Destino, MaxRutas, 650.0, Rutas).
+
+buscar_rutas_optimas(Origen, Destino, MaxRutas, MaxCaminata, Rutas) :-
     empty_heap(H0),
     empty_assoc(Visitas0),
     heuristica_tiempo(Origen, Destino, HIni),
     EstadoInicial = estado(Origen, none, none, [Origen], [], 0.0, 0.0, 0.0, 0, []),
     add_to_heap(H0, costo(HIni, 0, 0.0), EstadoInicial, HeapInicial),
-    astar_loop(HeapInicial, Destino, MaxRutas, [], Visitas0, Rutas).
+    astar_loop(HeapInicial, Destino, MaxRutas, MaxCaminata, [], Visitas0, Rutas).
 
-astar_loop(Heap, _, MaxRutas, Acc, _, Rutas) :-
+astar_loop(Heap, _, MaxRutas, _MaxCaminata, Acc, _, Rutas) :-
     (   empty_heap(Heap)
     ;   length(Acc, Cant), Cant >= MaxRutas
     ),
     !,
     reverse(Acc, Rutas).
 
-astar_loop(Heap, Destino, MaxRutas, Acc, Visitas, Rutas) :-
+astar_loop(Heap, Destino, MaxRutas, MaxCaminata, Acc, Visitas, Rutas) :-
     get_from_heap(Heap, _, Estado, RestoHeap),
     Estado = estado(Actual, UltimaLineaReal, _UltimoModo, ParadasVis, LineasUsadas, Dist, _DistCam, TiempoViaje, Transbordos, Tramos),
     TiempoTotal is TiempoViaje + (Transbordos * 8.0),
@@ -4598,22 +4546,23 @@ astar_loop(Heap, Destino, MaxRutas, Acc, Visitas, Rutas) :-
         ->  NuevoAcc = [Ruta|Acc]
         ;   NuevoAcc = Acc
         ),
-        astar_loop(RestoHeap, Destino, MaxRutas, NuevoAcc, Visitas, Rutas)
+        astar_loop(RestoHeap, Destino, MaxRutas, MaxCaminata, NuevoAcc, Visitas, Rutas)
     ;   ClaveVisita = Actual-UltimaLineaReal,
         (   get_assoc(ClaveVisita, Visitas, Conteo) -> true ; Conteo = 0 ),
         (   Conteo >= 2
-        ->  astar_loop(RestoHeap, Destino, MaxRutas, Acc, Visitas, Rutas)
+        ->  astar_loop(RestoHeap, Destino, MaxRutas, MaxCaminata, Acc, Visitas, Rutas)
         ;   NuevoConteo is Conteo + 1,
             put_assoc(ClaveVisita, Visitas, NuevoConteo, NuevasVisitas),
-            expandir_vecinos_astar(Estado, Destino, Vecinos),
+            expandir_vecinos_astar(Estado, Destino, MaxCaminata, Vecinos),
             agregar_lista_a_heap(Vecinos, RestoHeap, NuevoHeap),
-            astar_loop(NuevoHeap, Destino, MaxRutas, Acc, NuevasVisitas, Rutas)
+            astar_loop(NuevoHeap, Destino, MaxRutas, MaxCaminata, Acc, NuevasVisitas, Rutas)
         )
     ).
 
 expandir_vecinos_astar(
     estado(Actual, UltimaLineaReal, UltimoModo, Visitados, Lineas, Dist, DistCam, TiempoViaje, Transbordos, Tramos),
     Destino,
+    MaxCaminata,
     Vecinos
 ) :-
     findall(
@@ -4627,10 +4576,12 @@ expandir_vecinos_astar(
             \+ (UltimoModo == 'CAMINANDO', LineaTramo == 'CAMINANDO'),
             % 3. Prohibir bajarse de una línea para caminar y volver a subir a la misma línea
             \+ (UltimoModo == 'CAMINANDO', LineaTramo == UltimaLineaReal),
-            % 4. Control de presupuesto máximo de caminata acumulada en todo el viaje (650m)
+            % 4. Control de presupuesto de caminata por tramo y acumulada
             (   LineaTramo == 'CAMINANDO'
-            ->  NuevaDistCam is DistCam + D,
-                NuevaDistCam =< 650.0
+            ->  D =< MaxCaminata,
+                NuevaDistCam is DistCam + D,
+                PresupuestoAcum is max(MaxCaminata, 650.0),
+                NuevaDistCam =< PresupuestoAcum
             ;   NuevaDistCam = DistCam
             ),
             % 5. Cálculo exacto de transbordos reales entre líneas de colectivo
@@ -4676,7 +4627,10 @@ agregar_lista_a_heap([Prioridad-Estado|Resto], HeapIn, HeapOut) :-
 % ==================================================================
 
 buscar_rutas_json(Origen, Destino, MaxRutas, JsonAtom) :-
-    buscar_rutas_optimas(Origen, Destino, MaxRutas, Rutas),
+    buscar_rutas_json(Origen, Destino, MaxRutas, 650.0, JsonAtom).
+
+buscar_rutas_json(Origen, Destino, MaxRutas, MaxCaminata, JsonAtom) :-
+    buscar_rutas_optimas(Origen, Destino, MaxRutas, MaxCaminata, Rutas),
     maplist(ruta_a_dict, Rutas, DictsRutas),
     atom_json_dict(JsonAtom, DictsRutas, [as(atom)]).
 

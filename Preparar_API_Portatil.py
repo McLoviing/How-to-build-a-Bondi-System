@@ -32,4 +32,4 @@ env.update(SWI_HOME_DIR=str(salida / 'prolog'), LIBSWIPL_PATH=str(salida / 'prol
 env['PATH'] = str(salida / 'prolog' / 'bin') + os.pathsep + str(salida / 'python') + os.pathsep + os.path.join(os.environ['SystemRoot'], 'System32')
 subprocess.run([str(salida / 'python' / 'python.exe'), '-c', 'import uvicorn, api; from servicios_prolog import cargar_prolog, obtener_lineas; p = cargar_prolog(); print(obtener_lineas(p))'], cwd=salida, env=env, check=True)
 print('Carpeta creada:', salida)
-print('Copiala al pendrive y ejecuta Iniciar_API.bat. Proba en otra PC antes de la defensa.')
+print('Copiala al pendrive y ejecuta Iniciar_API.bat.')

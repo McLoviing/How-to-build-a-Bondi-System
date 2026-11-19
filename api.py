@@ -124,7 +124,8 @@ def listar_lineas():
 def consultar_rutas(
     origen: str = Query(..., description="ID de parada origen, ej: p_18"),
     destino: str = Query(..., description="ID de parada destino, ej: p_413"),
-    alternativas: int = Query(CANTIDAD_ALTERNATIVAS, ge=1, le=10)
+    alternativas: int = Query(CANTIDAD_ALTERNATIVAS, ge=1, le=10),
+    max_caminata: Optional[float] = Query(None, ge=50, le=1500, description="Distancia máxima de caminata en metros")
 ):
     dict_paradas: Dict[str, Dict[str, Any]] = estado_app["dict_paradas"]
 
@@ -133,13 +134,23 @@ def consultar_rutas(
     if destino not in dict_paradas:
         raise HTTPException(status_code=404, detail=f"La parada de destino '{destino}' no existe.")
 
-    clave_cache = ("v2", origen, destino, alternativas)
+    # Normalizar valores por si la función es invocada directamente sin pasar por FastAPI routing
+    cant_alternativas = alternativas if isinstance(alternativas, int) else CANTIDAD_ALTERNATIVAS
+    limite_caminata = float(max_caminata) if isinstance(max_caminata, (int, float)) else None
+
+    clave_cache = ("v2", origen, destino, cant_alternativas, limite_caminata)
     cache = estado_app["cache_rutas"]
     if clave_cache in cache:
         return cache[clave_cache]
 
     try:
-        rutas_crudas = buscar_rutas(estado_app["prolog"], origen, destino, alternativas)
+        rutas_crudas = buscar_rutas(
+            estado_app["prolog"],
+            origen,
+            destino,
+            cant_alternativas,
+            max_caminata=limite_caminata
+        )
     except ValueError as val_err:
         raise HTTPException(status_code=400, detail=str(val_err))
     except Exception as exc:

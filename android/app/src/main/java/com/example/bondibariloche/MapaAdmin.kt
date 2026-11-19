@@ -11,6 +11,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.bondibariloche.data.CalculosGeograficos
 import com.example.bondibariloche.data.Parada
 import com.example.bondibariloche.data.ParadaAdmin
 import com.example.bondibariloche.data.TramoAdmin
@@ -19,15 +20,6 @@ import java.util.Locale
 import kotlin.math.max
 import kotlin.math.round
 import kotlin.math.sqrt
-
-private const val K_LAT_BARILOCHE = 111132.95
-private const val K_LON_BARILOCHE = 83715.4
-
-private fun distanciaCuadradaMetros(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-    val dLat = (lat1 - lat2) * K_LAT_BARILOCHE
-    val dLon = (lon1 - lon2) * K_LON_BARILOCHE
-    return (dLat * dLat + dLon * dLon)
-}
 
 @Composable
 fun DialogMapaAdmin(
@@ -256,7 +248,7 @@ fun DialogCargaVisualRecorrido(
         val pOrig = adminPorId[origenActual] ?: return
         val pDest = adminPorId[destinoId] ?: return
 
-        val distRecta = sqrt(distanciaCuadradaMetros(pOrig.latitud, pOrig.longitud, pDest.latitud, pDest.longitud))
+        val distRecta = CalculosGeograficos.distanciaRapidaMetros(pOrig.latitud, pOrig.longitud, pDest.latitud, pDest.longitud)
         val distVial = max(10.0, round(distRecta * 1.25))
         val tiempoEst = round(max(0.5, (distVial / 366.67) + 0.35) * 10.0) / 10.0
 
